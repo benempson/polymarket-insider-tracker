@@ -18,10 +18,12 @@ param(
     [switch]$AutomatedRun,
 
     # VM SSH connection
+    # Leave VmKeyFile empty to use Pageant for authentication (recommended).
+    # VmKeyFile must be a .ppk (PuTTY Private Key) if provided.
     [string]$VmHost,
     [string]$VmPort,
     [string]$VmUser,
-    [string]$VmKeyFile,
+    [string]$VmKeyFile = "",
     [string]$VmAppDir,
 
     # Shared Redis container name on the VM
@@ -67,7 +69,8 @@ function Resolve-Setting([string]$ParamValue, [string]$DotEnvKey, [string]$EnvVa
 $VmHost         = Resolve-Setting $VmHost         'DEPLOY_VM_HOST'     'DEPLOY_VM_HOST'
 $VmPort         = Resolve-Setting $VmPort         'DEPLOY_VM_PORT'     'DEPLOY_VM_PORT'
 $VmUser         = Resolve-Setting $VmUser         'DEPLOY_VM_USER'     'DEPLOY_VM_USER'
-$VmKeyFile      = Resolve-Setting $VmKeyFile      'DEPLOY_VM_KEY_FILE' 'DEPLOY_VM_KEY_FILE'
+# VmKeyFile intentionally not resolved from .env — Pageant is the default.
+# Pass -VmKeyFile explicitly only if you need a .ppk file instead of Pageant.
 $RedisContainer = Resolve-Setting $RedisContainer  'REDIS_CONTAINER_NAME' 'REDIS_CONTAINER_NAME'
 $GhcrUser       = Resolve-Setting $GhcrUser       'GHCR_USER'          'GHCR_USER'
 $GhcrPat        = Resolve-Setting $GhcrPat        'GHCR_PAT'           'GHCR_PAT'
