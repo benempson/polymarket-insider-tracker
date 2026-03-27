@@ -206,48 +206,55 @@ Write-Host "  Polymarket Insider Tracker - Deploy" -ForegroundColor Cyan
 Write-Host "  ====================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Confirm
-if (-not $Yes -and -not $AutomatedRun) {
-    $confirm = Read-Host "  Deploy to production? (y/N)"
-    if ($confirm -ne 'y') { Fail "Aborted by user." }
-}
-
 # ---------------------------------------------------------------------------
-# Step 1: Build - push to main and watch GH Actions, or use provided image
+# Step 1: Build or skip — choose action
 # ---------------------------------------------------------------------------
 if ($Image) {
     Write-Host "  Using provided image: $Image" -ForegroundColor Cyan
 } else {
-    Write-Host "  Pushing main..."
-    & git push origin main
-    if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
+    $defaultImage = "ghcr.io/$GhcrUser/polymarket-insider-tracker:main"
 
-    $repo = git remote get-url origin
-    Write-Host "`n  Triggering build workflow..."
-    & gh workflow run deploy.yml --repo $repo
-    if ($LASTEXITCODE -ne 0) { Fail "Failed to trigger workflow" }
-
-    # Poll until GH registers the run (max ~30s)
-    $runId = $null
-    for ($i = 0; $i -lt 10; $i++) {
-        Start-Sleep -Seconds 3
-        $runId = & gh run list --repo $repo --workflow=deploy.yml --status=in_progress --json databaseId --jq '.[0].databaseId' 2>$null
-        if ($runId) { break }
-        # Also check queued runs
-        $runId = & gh run list --repo $repo --workflow=deploy.yml --status=queued --json databaseId --jq '.[0].databaseId' 2>$null
-        if ($runId) { break }
+    if (-not $Yes -and -not $AutomatedRun) {
+        Write-Host "  1) Build and deploy  (push, build image, then deploy to VM)"
+        Write-Host "  2) Deploy only       (use latest image, skip build)"
+        Write-Host ""
+        $choice = Read-Host "  Choose (1/2)"
+    } else {
+        $choice = '1'
     }
-    if (-not $runId) { Fail "Could not find triggered workflow run" }
 
-    Write-Host "  Watching build run $runId..."
-    & gh run watch $runId --repo $repo --exit-status
-    if ($LASTEXITCODE -ne 0) { Fail "GitHub Actions build failed" }
+    if ($choice -eq '2') {
+        $Image = $defaultImage
+        Write-Host "`n  Skipping build, using latest image: $Image" -ForegroundColor Cyan
+    } else {
+        Write-Host "`n  Pushing main..."
+        & git push origin main
+        if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
 
-    Write-Host "`n  $CHK Image built and pushed." -ForegroundColor Green
+        $repo = git remote get-url origin
+        Write-Host "`n  Triggering build workflow..."
+        & gh workflow run deploy.yml --repo $repo
+        if ($LASTEXITCODE -ne 0) { Fail "Failed to trigger workflow" }
 
-    # Derive the image tag: ghcr.io/<user>/polymarket-insider-tracker:main
-    $Image = "ghcr.io/$GhcrUser/polymarket-insider-tracker:main"
-    Write-Host "  Image: $Image" -ForegroundColor Cyan
+        # Poll until GH registers the run (max ~30s)
+        $runId = $null
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Seconds 3
+            $runId = & gh run list --repo $repo --workflow=deploy.yml --status=in_progress --json databaseId --jq '.[0].databaseId' 2>$null
+            if ($runId) { break }
+            $runId = & gh run list --repo $repo --workflow=deploy.yml --status=queued --json databaseId --jq '.[0].databaseId' 2>$null
+            if ($runId) { break }
+        }
+        if (-not $runId) { Fail "Could not find triggered workflow run" }
+
+        Write-Host "  Watching build run $runId..."
+        & gh run watch $runId --repo $repo --exit-status
+        if ($LASTEXITCODE -ne 0) { Fail "GitHub Actions build failed" }
+
+        Write-Host "`n  $CHK Image built and pushed." -ForegroundColor Green
+        $Image = $defaultImage
+        Write-Host "  Image: $Image" -ForegroundColor Cyan
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -268,6 +275,9 @@ $prodEnvFile = New-EnvProduction
 $rc = Copy-ToVm $prodEnvFile "$VmAppDir/vars/.env.production"
 Remove-Item $prodEnvFile -ErrorAction SilentlyContinue
 if ($rc -ne 0) { Fail "Failed to upload .env.production" }
+# Strip Windows CRLF so shell scripts don't get \r in parsed values
+$rc = Invoke-Ssh "sed -i 's/\r//' $VmAppDir/vars/.env.production"
+if ($rc -ne 0) { Fail "Failed to fix line endings in .env.production" }
 
 # Sync compose and deploy script
 Write-Host "`n  Syncing deploy files..."

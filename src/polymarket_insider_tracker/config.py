@@ -120,7 +120,7 @@ class DiscordSettings(BaseSettings):
     @property
     def enabled(self) -> bool:
         """Check if Discord notifications are enabled."""
-        return self.webhook_url is not None
+        return self.webhook_url is not None and self.webhook_url.get_secret_value() != ""
 
 
 class TelegramSettings(BaseSettings):
@@ -142,7 +142,11 @@ class TelegramSettings(BaseSettings):
     @property
     def enabled(self) -> bool:
         """Check if Telegram notifications are enabled."""
-        return self.bot_token is not None and self.chat_id is not None
+        return (
+            self.bot_token is not None
+            and self.bot_token.get_secret_value() != ""
+            and bool(self.chat_id)
+        )
 
 
 class Settings(BaseSettings):

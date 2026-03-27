@@ -25,6 +25,7 @@ from polymarket_insider_tracker.detector.fresh_wallet import FreshWalletDetector
 from polymarket_insider_tracker.detector.scorer import RiskScorer, SignalBundle
 from polymarket_insider_tracker.detector.size_anomaly import SizeAnomalyDetector
 from polymarket_insider_tracker.ingestor.clob_client import ClobClient
+from polymarket_insider_tracker.ingestor.health import HealthMonitor
 from polymarket_insider_tracker.ingestor.metadata_sync import MarketMetadataSync
 from polymarket_insider_tracker.ingestor.websocket import TradeStreamHandler
 from polymarket_insider_tracker.profiler.analyzer import WalletAnalyzer
@@ -120,6 +121,7 @@ class Pipeline:
         self._alert_formatter: AlertFormatter | None = None
         self._alert_dispatcher: AlertDispatcher | None = None
         self._trade_stream: TradeStreamHandler | None = None
+        self._health_monitor: HealthMonitor | None = None
 
         # Synchronization
         self._stop_event: asyncio.Event | None = None
@@ -255,6 +257,10 @@ class Pipeline:
             host=settings.polymarket.ws_url,
         )
 
+        # Initialize Health Monitor
+        logger.debug("Initializing health monitor...")
+        self._health_monitor = HealthMonitor()
+
         logger.info("All components initialized")
 
     def _build_alert_channels(self) -> list[AlertChannel]:
@@ -286,6 +292,11 @@ class Pipeline:
 
     async def _start_background_services(self) -> None:
         """Start background services."""
+        # Start health monitor and HTTP server
+        if self._health_monitor:
+            await self._health_monitor.start()
+            await self._health_monitor.start_http_server(self._settings.health_port)
+
         # Start metadata sync
         if self._metadata_sync:
             logger.debug("Starting metadata sync service...")
@@ -331,6 +342,11 @@ class Pipeline:
 
     async def _cleanup(self) -> None:
         """Clean up resources."""
+        # Stop health monitor
+        if self._health_monitor:
+            await self._health_monitor.stop()
+            self._health_monitor = None
+
         # Close database connections
         if self._db_manager:
             await self._db_manager.dispose_async()
