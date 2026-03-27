@@ -222,15 +222,25 @@ if ($Image) {
     & git push origin main
     if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
 
+    $repo = git remote get-url origin
     Write-Host "`n  Triggering build workflow..."
-    & gh workflow run deploy.yml --repo (git remote get-url origin)
+    & gh workflow run deploy.yml --repo $repo
     if ($LASTEXITCODE -ne 0) { Fail "Failed to trigger workflow" }
 
-    # Brief pause for GH to register the run before watching
-    Start-Sleep -Seconds 3
+    # Poll until GH registers the run (max ~30s)
+    $runId = $null
+    for ($i = 0; $i -lt 10; $i++) {
+        Start-Sleep -Seconds 3
+        $runId = & gh run list --repo $repo --workflow=deploy.yml --status=in_progress --json databaseId --jq '.[0].databaseId' 2>$null
+        if ($runId) { break }
+        # Also check queued runs
+        $runId = & gh run list --repo $repo --workflow=deploy.yml --status=queued --json databaseId --jq '.[0].databaseId' 2>$null
+        if ($runId) { break }
+    }
+    if (-not $runId) { Fail "Could not find triggered workflow run" }
 
-    Write-Host "  Watching GitHub Actions build..."
-    & gh run watch --repo (git remote get-url origin) --exit-status
+    Write-Host "  Watching build run $runId..."
+    & gh run watch $runId --repo $repo --exit-status
     if ($LASTEXITCODE -ne 0) { Fail "GitHub Actions build failed" }
 
     Write-Host "`n  $CHK Image built and pushed." -ForegroundColor Green
