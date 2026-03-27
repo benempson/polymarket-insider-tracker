@@ -102,6 +102,9 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
+# Claude Code logs (may contain sensitive command output)
+.claude/logs/
+
 # IDE
 .idea/
 .vscode/

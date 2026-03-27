@@ -1,0 +1,69 @@
+# Production compose file for the VM.
+# PostgreSQL runs alongside the tracker. Redis is shared with the existing
+# ${REDIS_CONTAINER:?Set REDIS_CONTAINER} container (all keys are namespace-prefixed).
+#
+# Required env vars (set by deploy-tracker.sh before invoking compose):
+#   TRACKER_IMAGE       — Docker image tag
+#   POSTGRES_PASSWORD   — PostgreSQL password
+#   TRACKER_APP_DIR     — Absolute path to app directory on the VM
+#   REDIS_CONTAINER     — Name of the shared Redis container
+#   REDIS_NETWORK       — Docker network name where Redis lives
+#
+# Usage:
+#   TRACKER_IMAGE=ghcr.io/.../polymarket-insider-tracker:main \
+#     docker compose -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: polymarket-tracker-postgres
+    volumes:
+      - tracker_postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: polymarket_tracker
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d polymarket_tracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - tracker-internal
+
+  tracker:
+    image: ${TRACKER_IMAGE:?Set TRACKER_IMAGE}
+    container_name: polymarket-tracker
+    env_file:
+      - ${TRACKER_APP_DIR:?Set TRACKER_APP_DIR}/vars/.env.production
+    environment:
+      # Override DATABASE_URL to point at the co-located postgres container
+      DATABASE_URL: postgresql://tracker:${POSTGRES_PASSWORD}@polymarket-tracker-postgres:5432/polymarket_tracker
+      # Override REDIS_URL to point at the shared Redis container
+      REDIS_URL: redis://${REDIS_CONTAINER:?Set REDIS_CONTAINER}:6379
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:8085:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - tracker-internal
+      - backend-shared
+
+volumes:
+  tracker_postgres_data:
+    driver: local
+
+networks:
+  tracker-internal:
+    driver: bridge
+  backend-shared:
+    # Join the existing network that ${REDIS_CONTAINER:?Set REDIS_CONTAINER} lives on
+    external: true
+    name: ${REDIS_NETWORK:-backend_default}
