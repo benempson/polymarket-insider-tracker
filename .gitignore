@@ -119,3 +119,4 @@ Thumbs.db
 # Local development
 *.local
 .direnv/
+/.claude/settings.local.json

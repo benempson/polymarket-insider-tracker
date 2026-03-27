@@ -50,6 +50,11 @@ process.stdin.on('end', () => {
         "pwd",                          // print working dir
         "node ", "node.",               // run node scripts
         "tsc ",                         // typescript compiler
+        // Python
+        "python ", "python3 ",          // run python scripts/tests
+        "python -m ", "python3 -m ",    // module execution (pytest etc.)
+        "pip ", "pip3 ",                // package management
+        "uv ",
         // Text processing (read-only)
         "grep ", "rg ",                 // search
         "sort ", "uniq ", "wc ",        // text utils
