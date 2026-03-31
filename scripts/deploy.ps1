@@ -423,7 +423,7 @@ if ($rc -ne 0) { Fail "GHCR login failed on VM" }
 $envExists = Get-SshOutput "test -f $VmAppDir/vars/.env.production; if [ `$? -eq 0 ]; then echo EXISTS; else echo MISSING; fi"
 $envExists = ($envExists -join '').Trim()
 if ($envExists -eq 'MISSING') {
-    Write-Host "`n  No .env.production on VM — seeding from .env.example..."
+    Write-Host "`n  No .env.production on VM - seeding from .env.example..."
     $rc = Copy-ToVm ".env.example" "$VmAppDir/vars/.env.production"
     if ($rc -ne 0) { Fail "Failed to upload .env.example as .env.production" }
     $rc = Invoke-Ssh "sed -i 's/\r//' $VmAppDir/vars/.env.production"
@@ -468,7 +468,8 @@ if ($rc -ne 0) { Fail "Failed to make deploy-tracker.sh executable" }
 # Step 3: Deploy on VM
 # ---------------------------------------------------------------------------
 Write-Host "`n  Deploying on VM..."
-$rc = Invoke-Ssh "{ TRACKER_IMAGE='$Image' TRACKER_APP_DIR='$VmAppDir' REDIS_CONTAINER='$RedisContainer' $VmAppDir/scripts/deploy-tracker.sh; } 2>&1"
+$deployCmd = "TRACKER_IMAGE='$Image' TRACKER_APP_DIR='$VmAppDir' REDIS_CONTAINER='$RedisContainer' $VmAppDir/scripts/deploy-tracker.sh 2>&1"
+$rc = Invoke-Ssh $deployCmd
 if ($rc -ne 0) { Fail "Deploy failed on VM" }
 
 Write-Host ("`n  " + $CHK + " Deployment complete.`n") -ForegroundColor Green
