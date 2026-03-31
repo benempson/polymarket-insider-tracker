@@ -194,13 +194,24 @@ class TradeStreamHandler:
                 self._stats.trades_received += 1
                 self._stats.last_trade_time = time.time()
 
-                logger.debug(
-                    "Trade: %s %s @ %s on %s",
-                    trade.side,
-                    trade.size,
-                    trade.price,
-                    trade.market_slug,
-                )
+                # Log every 100th trade at INFO to confirm stream is active
+                if self._stats.trades_received % 100 == 1:
+                    logger.info(
+                        "Trade stream active: %d trades received (latest: %s %s @ %s on %s)",
+                        self._stats.trades_received,
+                        trade.side,
+                        trade.size,
+                        trade.price,
+                        trade.market_slug,
+                    )
+                else:
+                    logger.debug(
+                        "Trade: %s %s @ %s on %s",
+                        trade.side,
+                        trade.size,
+                        trade.price,
+                        trade.market_slug,
+                    )
 
                 try:
                     await self._on_trade(trade)
@@ -208,8 +219,13 @@ class TradeStreamHandler:
                     logger.error("Error in trade callback: %s", e)
 
             else:
-                # Log other message types for debugging
-                logger.debug("Received message: topic=%s type=%s", topic, msg_type)
+                # Log non-trade message types at INFO until we confirm stream works
+                if not hasattr(self, '_unknown_msg_types_logged'):
+                    self._unknown_msg_types_logged: set[tuple[str | None, str | None]] = set()
+                key = (topic, msg_type)
+                if key not in self._unknown_msg_types_logged:
+                    self._unknown_msg_types_logged.add(key)
+                    logger.info("Received non-trade message: topic=%s type=%s", topic, msg_type)
 
         except json.JSONDecodeError as e:
             logger.warning("Invalid JSON message: %s", e)

@@ -34,7 +34,16 @@ param(
     [string]$GhcrPat,
 
     # Skip build, deploy a specific image directly
-    [string]$Image = ''
+    [string]$Image = '',
+
+    # Collect diagnostics from the running bot on the VM and save to a local file
+    [switch]$Diagnose,
+
+    # Push .env changes to the VM and restart the tracker
+    [switch]$UpdateConfig,
+
+    # Show recent container logs
+    [switch]$Logs
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,9 +102,13 @@ $missingVars = @()
 if (-not $VmHost)         { $missingVars += 'DEPLOY_VM_HOST' }
 if (-not $VmPort)         { $missingVars += 'DEPLOY_VM_PORT' }
 if (-not $VmUser)         { $missingVars += 'DEPLOY_VM_USER' }
-if (-not $RedisContainer) { $missingVars += 'REDIS_CONTAINER_NAME' }
-if (-not $GhcrUser)       { $missingVars += 'GHCR_USER' }
-if (-not $GhcrPat)        { $missingVars += 'GHCR_PAT' }
+if (-not $Diagnose) {
+    if (-not $RedisContainer) { $missingVars += 'REDIS_CONTAINER_NAME' }
+}
+if (-not $Diagnose -and -not $UpdateConfig) {
+    if (-not $GhcrUser)       { $missingVars += 'GHCR_USER' }
+    if (-not $GhcrPat)        { $missingVars += 'GHCR_PAT' }
+}
 if ($missingVars.Count -gt 0) {
     Write-Host "`n  x Missing required config: $($missingVars -join ', ')" -ForegroundColor Red
     Write-Host ""
@@ -103,29 +116,35 @@ if ($missingVars.Count -gt 0) {
     Write-Host "    DEPLOY_VM_HOST=<vm-hostname>"
     Write-Host "    DEPLOY_VM_PORT=<ssh-port>"
     Write-Host "    DEPLOY_VM_USER=<ssh-user>"
-    Write-Host "    REDIS_CONTAINER_NAME=<redis-container-name>"
-    Write-Host "    GHCR_USER=<github-username>"
-    Write-Host "    GHCR_PAT=<ghcr-pat-with-packages-read>"
+    if (-not $Diagnose) {
+        Write-Host "    REDIS_CONTAINER_NAME=<redis-container-name>"
+    }
+    if (-not $Diagnose -and -not $UpdateConfig) {
+        Write-Host "    GHCR_USER=<github-username>"
+        Write-Host "    GHCR_PAT=<ghcr-pat-with-packages-read>"
+    }
     Write-Host ""
     exit 1
 }
 
-# Validate that .env has the required application config for the tracker
-$requiredAppVars = @('POSTGRES_PASSWORD', 'POLYGON_RPC_URL')
-$missingApp = @()
-foreach ($key in $requiredAppVars) {
-    if (-not $dotenv.ContainsKey($key) -or -not $dotenv[$key]) {
-        $missingApp += $key
+if (-not $Diagnose) {
+    # Validate that .env has the required application config for the tracker
+    $requiredAppVars = @('POSTGRES_PASSWORD', 'POLYGON_RPC_URL')
+    $missingApp = @()
+    foreach ($key in $requiredAppVars) {
+        if (-not $dotenv.ContainsKey($key) -or -not $dotenv[$key]) {
+            $missingApp += $key
+        }
     }
-}
-if ($missingApp.Count -gt 0) {
-    Write-Host "`n  x Missing required application config in .env: $($missingApp -join ', ')" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  These are needed to generate the production env file on the VM:" -ForegroundColor Yellow
-    Write-Host "    POSTGRES_PASSWORD=<strong-random-password>"
-    Write-Host "    POLYGON_RPC_URL=<alchemy-or-infura-polygon-rpc-url>"
-    Write-Host ""
-    exit 1
+    if ($missingApp.Count -gt 0) {
+        Write-Host "`n  x Missing required application config in .env: $($missingApp -join ', ')" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  These are needed to generate the production env file on the VM:" -ForegroundColor Yellow
+        Write-Host "    POSTGRES_PASSWORD=<strong-random-password>"
+        Write-Host "    POLYGON_RPC_URL=<alchemy-or-infura-polygon-rpc-url>"
+        Write-Host ""
+        exit 1
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -156,6 +175,81 @@ function Copy-ToVm([string]$LocalPath, [string]$RemotePath) {
         if ($line.Trim()) { Write-Host "    $line" }
     }
     return $ec
+}
+
+function Get-SshOutput([string]$Cmd) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    if ($script:VmKeyFile) {
+        $out = & plink -batch -P $script:VmPort -i $script:VmKeyFile "$($script:VmUser)@$($script:VmHost)" $Cmd 2>&1
+    } else {
+        $out = & plink -batch -agent -P $script:VmPort "$($script:VmUser)@$($script:VmHost)" $Cmd 2>&1
+    }
+    $ErrorActionPreference = $prev
+    return $out | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
+    }
+}
+
+function Write-DiagSection([string]$Title) {
+    $line = '-' * [Math]::Max(0, 62 - $Title.Length)
+    Write-Host ""
+    Write-Host "  -- $Title $line" -ForegroundColor Cyan
+}
+
+function Invoke-Diagnose {
+    Write-Host "  Polymarket Insider Tracker - Diagnostics" -ForegroundColor Cyan
+    Write-Host "  =========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  VM:        $VmUser@$VmHost`:$VmPort"
+    Write-Host "  Collected: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC"
+
+    $script:_diagLines = [System.Collections.Generic.List[string]]::new()
+    $script:_diagLines.Add("Polymarket Insider Tracker - Diagnostics")
+    $script:_diagLines.Add("Collected: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC")
+    $script:_diagLines.Add("VM: $VmUser@$VmHost`:$VmPort")
+    $script:_diagLines.Add("")
+
+    function Collect([string]$section, [string]$cmd) {
+        Write-DiagSection $section
+        $out = Get-SshOutput $cmd
+        $out | ForEach-Object { Write-Host "    $_" }
+        $script:_diagLines.Add("-- $section " + ('-' * [Math]::Max(0, 62 - $section.Length)))
+        $out | ForEach-Object { $script:_diagLines.Add($_) }
+        $script:_diagLines.Add("")
+    }
+
+    Collect "Container Status" `
+        "docker ps --filter name=polymarket-tracker --format 'table {{.Names}}`t{{.Status}}`t{{.Image}}'"
+
+    Collect "Restart Counts" `
+        "docker inspect polymarket-tracker polymarket-tracker-postgres --format '{{.Name}}  status={{.State.Status}}  restarts={{.RestartCount}}  exitCode={{.State.ExitCode}}' 2>/dev/null || echo 'One or both containers not found'"
+
+    Collect "Health Endpoint (:8085/health)" `
+        "curl -sf http://localhost:8085/health | python3 -m json.tool 2>/dev/null || echo 'UNREACHABLE'"
+
+    Collect "Prometheus Metrics (:8085/metrics)" `
+        "curl -sf http://localhost:8085/metrics 2>/dev/null | grep -E '^polymarket_[^#]' || echo 'UNREACHABLE'"
+
+    Collect "Database Tables & Row Counts" `
+        "docker exec polymarket-tracker-postgres psql -U tracker -d polymarket_tracker -c 'SELECT relname AS table, n_live_tup AS rows FROM pg_stat_user_tables ORDER BY n_live_tup DESC;' 2>/dev/null || echo 'Database unavailable'"
+
+    Collect "Active Redis Dedup Keys (polymarket:dedup:*)" `
+        "n=`$(docker exec `$(docker ps -qf name=nuera-backend-redis) redis-cli KEYS 'polymarket:dedup:*' 2>/dev/null | wc -l); echo `"`$n dedup keys active`""
+
+    Collect "VM Resource Usage" `
+        "free -h && echo '' && df -h / && echo '' && docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/dev/null"
+
+    Collect "Recent Logs - last 100 lines (stdout+stderr)" `
+        "docker logs polymarket-tracker --tail 100 2>&1"
+
+    $outDir  = Join-Path (Join-Path $PSScriptRoot '..') 'diagnostics'
+    $null    = New-Item -ItemType Directory -Force -Path $outDir
+    $outFile = Join-Path $outDir "diag-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
+    $script:_diagLines | Set-Content -Path $outFile -Encoding UTF8
+
+    Write-Host ""
+    Write-Host "  $CHK Diagnostics saved to: $outFile" -ForegroundColor Green
+    Write-Host ""
 }
 
 # ---------------------------------------------------------------------------
@@ -198,10 +292,117 @@ function New-EnvProduction {
     return $prodFile
 }
 
+function Invoke-UpdateConfig {
+    Write-Host "  Polymarket Insider Tracker - Update Config" -ForegroundColor Cyan
+    Write-Host "  ===========================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Read .env.production from the VM
+    Write-Host "  Reading .env.production from VM..."
+    $fileContent = (Get-SshOutput "cat $VmAppDir/vars/.env.production 2>/dev/null || echo '___FILE_NOT_FOUND___'") -join "`n"
+
+    if ($fileContent -eq '___FILE_NOT_FOUND___') {
+        Fail "No .env.production found on VM at $VmAppDir/vars/.env.production"
+    }
+
+    # Parse .env.production into key=value pairs
+    $fileVars = @{}
+    $fileContent -split "`n" | ForEach-Object {
+        $l = $_.Trim()
+        if ($l -and -not $l.StartsWith('#') -and $l -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+            $fileVars[$Matches[1]] = $Matches[2]
+        }
+    }
+
+    if ($fileVars.Count -eq 0) {
+        Fail ".env.production on VM is empty or has no valid key=value pairs"
+    }
+
+    # Dump all env vars from the running container and parse the ones we care about
+    Write-Host "  Comparing .env.production against running container..."
+    $containerDump = Get-SshOutput "docker exec polymarket-tracker env 2>/dev/null"
+
+    if (-not $containerDump) {
+        Fail "Could not read environment from running container. Is polymarket-tracker running?"
+    }
+
+    # Parse container env output into hashtable
+    $containerVars = @{}
+    $containerDump | ForEach-Object {
+        $l = "$_".Trim()
+        if ($l -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+            $containerVars[$Matches[1]] = $Matches[2]
+        }
+    }
+
+    # Find differences
+    $changes = @()
+    foreach ($key in ($fileVars.Keys | Sort-Object)) {
+        $fileVal = $fileVars[$key]
+        $containerVal = if ($containerVars.ContainsKey($key)) { $containerVars[$key] } else { $null }
+
+        if ($containerVal -eq $null) {
+            $changes += "  + $key (new - not set in container)"
+        } elseif ($fileVal -ne $containerVal) {
+            $isSensitive = $key -match '(?i)(password|secret|token|pat|key|url)'
+            if ($isSensitive) {
+                $changes += "  ~ $key (changed)"
+            } else {
+                $changes += "  ~ $key : $containerVal -> $fileVal"
+            }
+        }
+    }
+
+    if ($changes.Count -eq 0) {
+        Write-Host ""
+        Write-Host "  No differences found. The running container already matches .env.production." -ForegroundColor Green
+        Write-Host ""
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  Changes to apply ($($changes.Count)):" -ForegroundColor Yellow
+    $changes | ForEach-Object { Write-Host $_ }
+    Write-Host ""
+
+    # Recreate tracker to pick up new env_file (restart alone won't re-read it)
+    Write-Host "  Recreating tracker container..."
+    $restartCmd = @(
+        "cd $VmAppDir",
+        "export POSTGRES_PASSWORD=`$(grep -E '^POSTGRES_PASSWORD=' vars/.env.production | cut -d= -f2- | tr -d '\\r')",
+        "export TRACKER_IMAGE=`$(docker inspect polymarket-tracker --format='{{.Config.Image}}' 2>/dev/null)",
+        "export REDIS_CONTAINER='$RedisContainer'",
+        "export REDIS_NETWORK=`$(docker inspect '$RedisContainer' --format='{{range `$k,`$v := .NetworkSettings.Networks}}{{`$k}}{{end}}' 2>/dev/null | head -1)",
+        "export TRACKER_APP_DIR='$VmAppDir'",
+        "docker compose -f docker-compose.prod.yml stop tracker",
+        "docker compose -f docker-compose.prod.yml rm -f tracker",
+        "docker compose -f docker-compose.prod.yml up -d tracker"
+    ) -join ' && '
+    $rc = Invoke-Ssh "{ $restartCmd; } 2>&1"
+    if ($rc -ne 0) { Fail "Failed to recreate tracker" }
+
+    # Quick health check
+    Write-Host "  Waiting for health check..."
+    Start-Sleep -Seconds 10
+    $healthOut = Get-SshOutput "curl -sf http://localhost:8085/health 2>/dev/null || echo 'UNREACHABLE'"
+    $healthStr = $healthOut -join ' '
+    if ($healthStr -match '"status"') {
+        Write-Host "`n  $CHK Config updated and tracker restarted.`n" -ForegroundColor Green
+    } else {
+        Write-Host "`n  WARNING: Tracker may not be healthy after restart. Run diagnostics to check." -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 Write-Host ""
+
+if ($Diagnose) { Invoke-Diagnose; exit 0 }
+if ($UpdateConfig) { Invoke-UpdateConfig; exit 0 }
+if ($Logs) { Invoke-Ssh "docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
+
 Write-Host "  Polymarket Insider Tracker - Deploy" -ForegroundColor Cyan
 Write-Host "  ====================================" -ForegroundColor Cyan
 Write-Host ""
@@ -217,11 +418,19 @@ if ($Image) {
     if (-not $Yes -and -not $AutomatedRun) {
         Write-Host "  1) Build and deploy  (push, build image, then deploy to VM)"
         Write-Host "  2) Deploy only       (use latest image, skip build)"
+        Write-Host "  3) Update config     (push .env changes, restart tracker)"
+        Write-Host "  4) Show recent logs  (last 100 lines)"
+        Write-Host "  5) Collect diagnostics from the running bot"
         Write-Host ""
-        $choice = Read-Host "  Choose (1/2)"
+        $choice = Read-Host "  Choose (1/2/3/4/5)"
+        if ($choice -notin @('1','2','3','4','5')) { Fail "Invalid choice '$choice'. Please enter 1, 2, 3, 4, or 5." }
     } else {
         $choice = '1'
     }
+
+    if ($choice -eq '5') { Invoke-Diagnose; exit 0 }
+    if ($choice -eq '4') { Invoke-Ssh "docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
+    if ($choice -eq '3') { Invoke-UpdateConfig; exit 0 }
 
     if ($choice -eq '2') {
         $Image = $defaultImage

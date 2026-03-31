@@ -1,3 +1,5 @@
+/diagnostics
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -120,3 +122,6 @@ Thumbs.db
 *.local
 .direnv/
 /.claude/settings.local.json
+
+# Diagnostic snapshots from deploy.ps1 -Diagnose
+/diagnostics/

@@ -222,43 +222,43 @@ class Pipeline:
         self._clob_client = ClobClient(api_key=api_key)
 
         # Initialize Market Metadata Sync
-        logger.debug("Initializing market metadata sync...")
+        logger.info("Initializing market metadata sync...")
         self._metadata_sync = MarketMetadataSync(
             redis=self._redis,
             clob_client=self._clob_client,
         )
 
         # Initialize Wallet Analyzer
-        logger.debug("Initializing wallet analyzer...")
+        logger.info("Initializing wallet analyzer...")
         self._wallet_analyzer = WalletAnalyzer(
             self._polygon_client,
             redis=self._redis,
         )
 
         # Initialize Detectors
-        logger.debug("Initializing detectors...")
+        logger.info("Initializing detectors...")
         self._fresh_wallet_detector = FreshWalletDetector(self._wallet_analyzer)
         self._size_anomaly_detector = SizeAnomalyDetector(self._metadata_sync)
 
         # Initialize Risk Scorer
-        logger.debug("Initializing risk scorer...")
+        logger.info("Initializing risk scorer...")
         self._risk_scorer = RiskScorer(self._redis)
 
         # Initialize Alerting
-        logger.debug("Initializing alerting components...")
+        logger.info("Initializing alerting components...")
         self._alert_formatter = AlertFormatter(verbosity="detailed")
         channels = self._build_alert_channels()
         self._alert_dispatcher = AlertDispatcher(channels)
 
         # Initialize Trade Stream
-        logger.debug("Initializing trade stream handler...")
+        logger.info("Initializing trade stream handler...")
         self._trade_stream = TradeStreamHandler(
             on_trade=self._on_trade,
             host=settings.polymarket.ws_url,
         )
 
         # Initialize Health Monitor
-        logger.debug("Initializing health monitor...")
+        logger.info("Initializing health monitor...")
         self._health_monitor = HealthMonitor()
 
         logger.info("All components initialized")

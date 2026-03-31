@@ -157,6 +157,7 @@ class MarketMetadataSync:
 
         # Perform initial sync
         try:
+            logger.info("Market metadata initial sync started")
             await self._sync_all_markets()
         except Exception as e:
             logger.error(f"Initial sync failed: {e}")
