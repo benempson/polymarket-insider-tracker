@@ -162,6 +162,7 @@ class HealthMonitor:
         stale_threshold_seconds: float = DEFAULT_STALE_THRESHOLD_SECONDS,
         health_check_interval: float = DEFAULT_HEALTH_CHECK_INTERVAL,
         on_health_change: HealthCallback | None = None,
+        get_pipeline_stats: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         """Initialize the health monitor.
 
@@ -173,6 +174,7 @@ class HealthMonitor:
         self._stale_threshold = stale_threshold_seconds
         self._health_check_interval = health_check_interval
         self._on_health_change = on_health_change
+        self._get_pipeline_stats = get_pipeline_stats
 
         self._streams: dict[str, StreamHealth] = {}
         self._start_time: float | None = None
@@ -453,6 +455,9 @@ class HealthMonitor:
             "streams": {},
         }
 
+        if self._get_pipeline_stats is not None:
+            body["pipeline"] = self._get_pipeline_stats()
+        
         for name, stream in report.streams.items():
             body["streams"][name] = {
                 "status": stream.status.value,

@@ -259,13 +259,26 @@ class Pipeline:
 
         # Initialize Health Monitor
         logger.info("Initializing health monitor...")
-        self._health_monitor = HealthMonitor()
+        self._health_monitor = HealthMonitor(get_pipeline_stats=self._get_health_stats)
 
         # Attach in-memory log handler to root logger so /logs endpoint works
         root_logger = logging.getLogger()
         root_logger.addHandler(self._health_monitor._log_handler)
 
         logger.info("All components initialized")
+
+    def _get_health_stats(self) -> dict[str, Any]:
+        """Return pipeline stats for the /health endpoint."""
+        stats = self._stats
+        return {
+            "state": self._state.value,
+            "trades_processed": stats.trades_processed,
+            "signals_generated": stats.signals_generated,
+            "alerts_sent": stats.alerts_sent,
+            "errors": stats.errors,
+            "last_trade_time": stats.last_trade_time.isoformat() if stats.last_trade_time else None,
+            "last_error": stats.last_error,
+        }
 
     def _build_alert_channels(self) -> list[AlertChannel]:
         """Build list of enabled alert channels."""
