@@ -125,6 +125,7 @@ def configure_logging(level: str) -> None:
         "loggers": {
             "httpx": {"level": "WARNING"},
             "httpcore": {"level": "WARNING"},
+            "hpack": {"level": "WARNING"},
             "websockets": {"level": "WARNING"},
             "web3": {"level": "WARNING"},
             "urllib3": {"level": "WARNING"},
