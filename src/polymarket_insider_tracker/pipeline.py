@@ -261,6 +261,10 @@ class Pipeline:
         logger.info("Initializing health monitor...")
         self._health_monitor = HealthMonitor()
 
+        # Attach in-memory log handler to root logger so /logs endpoint works
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self._health_monitor._log_handler)
+
         logger.info("All components initialized")
 
     def _build_alert_channels(self) -> list[AlertChannel]:
@@ -344,6 +348,7 @@ class Pipeline:
         """Clean up resources."""
         # Stop health monitor
         if self._health_monitor:
+            logging.getLogger().removeHandler(self._health_monitor._log_handler)
             await self._health_monitor.stop()
             self._health_monitor = None
 

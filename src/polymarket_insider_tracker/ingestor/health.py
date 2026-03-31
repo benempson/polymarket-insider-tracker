@@ -9,6 +9,7 @@ import contextlib
 import copy
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -108,6 +109,28 @@ HEALTH_STATUS = Gauge(
 )
 
 
+DEFAULT_LOG_BUFFER_SIZE = 1000
+
+
+class MemoryLogHandler(logging.Handler):
+    """Logging handler that stores formatted log lines in a ring buffer."""
+
+    def __init__(self, capacity: int = DEFAULT_LOG_BUFFER_SIZE) -> None:
+        super().__init__()
+        self._buffer: deque[str] = deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._buffer.append(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+    def get_lines(self, count: int) -> list[str]:
+        """Return the last `count` log lines."""
+        lines = list(self._buffer)
+        return lines[-count:] if count < len(lines) else lines
+
+
 class HealthMonitor:
     """Monitor connection health and expose metrics.
 
@@ -160,6 +183,12 @@ class HealthMonitor:
         # For throughput calculation
         self._event_windows: dict[str, list[float]] = {}
         self._window_duration = 10.0  # 10 second sliding window
+
+        # In-memory log buffer
+        self._log_handler = MemoryLogHandler()
+        self._log_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        )
 
         # HTTP server
         self._app: web.Application | None = None
@@ -464,6 +493,19 @@ class HealthMonitor:
         # Always return 200 if the server is running
         return web.json_response({"live": True}, status=200)
 
+    async def _handle_logs(self, request: web.Request) -> web.Response:
+        """Handle /logs endpoint. Query param: ?lines=100 (default 100, max 1000)."""
+        try:
+            lines = min(int(request.query.get("lines", "100")), DEFAULT_LOG_BUFFER_SIZE)
+        except ValueError:
+            lines = 100
+        log_lines = self._log_handler.get_lines(lines)
+        return web.Response(
+            text="\n".join(log_lines) + "\n",
+            content_type="text/plain",
+            charset="utf-8",
+        )
+
     def _create_app(self) -> web.Application:
         """Create the aiohttp application."""
         app = web.Application()
@@ -471,6 +513,7 @@ class HealthMonitor:
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/ready", self._handle_ready)
         app.router.add_get("/live", self._handle_live)
+        app.router.add_get("/logs", self._handle_logs)
         return app
 
     async def start_http_server(self, port: int = DEFAULT_HTTP_PORT) -> None:

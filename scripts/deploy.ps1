@@ -401,7 +401,7 @@ Write-Host ""
 
 if ($Diagnose) { Invoke-Diagnose; exit 0 }
 if ($UpdateConfig) { Invoke-UpdateConfig; exit 0 }
-if ($Logs) { Invoke-Ssh "docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
+if ($Logs) { Invoke-Ssh "curl -sf 'http://localhost:8085/logs?lines=100' 2>/dev/null || docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
 
 Write-Host "  Polymarket Insider Tracker - Deploy" -ForegroundColor Cyan
 Write-Host "  ====================================" -ForegroundColor Cyan
@@ -429,7 +429,7 @@ if ($Image) {
     }
 
     if ($choice -eq '5') { Invoke-Diagnose; exit 0 }
-    if ($choice -eq '4') { Invoke-Ssh "docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
+    if ($choice -eq '4') { Invoke-Ssh "curl -sf 'http://localhost:8085/logs?lines=100' 2>/dev/null || docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
     if ($choice -eq '3') { Invoke-UpdateConfig; exit 0 }
 
     if ($choice -eq '2') {
