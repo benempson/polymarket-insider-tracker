@@ -229,7 +229,7 @@ function Invoke-Diagnose {
     $script:_diagLines | Set-Content -Path $outFile -Encoding UTF8
 
     Write-Host ""
-    Write-Host "  $CHK Diagnostics saved to: $outFile" -ForegroundColor Green
+    Write-Host ("  " + $CHK + " Diagnostics saved to: $outFile") -ForegroundColor Green
     Write-Host ""
 }
 
@@ -328,7 +328,7 @@ function Invoke-UpdateConfig {
     $healthOut = Get-SshOutput "curl -sf http://localhost:8085/health 2>/dev/null || echo 'UNREACHABLE'"
     $healthStr = $healthOut -join ' '
     if ($healthStr -match '"status"') {
-        Write-Host "`n  $CHK Config updated and tracker restarted.`n" -ForegroundColor Green
+        Write-Host ("`n  " + $CHK + " Config updated and tracker restarted.`n") -ForegroundColor Green
     } else {
         Write-Host "`n  WARNING: Tracker may not be healthy after restart. Run diagnostics to check." -ForegroundColor Yellow
         Write-Host ""
@@ -401,7 +401,7 @@ if ($Image) {
         & gh run watch $runId --repo $repo --exit-status
         if ($LASTEXITCODE -ne 0) { Fail "GitHub Actions build failed" }
 
-        Write-Host "`n  $CHK Image built and pushed." -ForegroundColor Green
+        Write-Host ("`n  " + $CHK + " Image built and pushed.") -ForegroundColor Green
         $Image = $defaultImage
         Write-Host "  Image: $Image" -ForegroundColor Cyan
     }
@@ -448,7 +448,7 @@ if ($envExists -eq 'MISSING') {
         Write-Host ""
         Fail "Edit .env.production on the VM, then re-deploy."
     }
-    Write-Host "`n  .env.production exists on VM $CHK"
+    Write-Host ("`n  .env.production exists on VM " + $CHK)
 }
 
 # Sync compose and deploy script
@@ -471,4 +471,4 @@ Write-Host "`n  Deploying on VM..."
 $rc = Invoke-Ssh "{ TRACKER_IMAGE='$Image' TRACKER_APP_DIR='$VmAppDir' REDIS_CONTAINER='$RedisContainer' $VmAppDir/scripts/deploy-tracker.sh; } 2>&1"
 if ($rc -ne 0) { Fail "Deploy failed on VM" }
 
-Write-Host "`n  $CHK Deployment complete.`n" -ForegroundColor Green
+Write-Host ("`n  " + $CHK + " Deployment complete.`n") -ForegroundColor Green
