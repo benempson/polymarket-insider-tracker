@@ -527,7 +527,8 @@ class HealthMonitor:
             return
 
         self._app = self._create_app()
-        self._runner = web.AppRunner(self._app)
+        access_log = logging.getLogger("aiohttp.access") if logger.isEnabledFor(logging.DEBUG) else None
+        self._runner = web.AppRunner(self._app, access_log=access_log)
         await self._runner.setup()
 
         site = web.TCPSite(self._runner, "0.0.0.0", port)
