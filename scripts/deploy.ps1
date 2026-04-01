@@ -464,6 +464,25 @@ if ($rc -ne 0) { Fail "Failed to fix line endings in deploy-tracker.sh" }
 $rc = Invoke-Ssh "chmod +x $VmAppDir/scripts/deploy-tracker.sh"
 if ($rc -ne 0) { Fail "Failed to make deploy-tracker.sh executable" }
 
+# Sync watchdog script and install cron job
+$rc = Copy-ToVm "scripts/watchdog.sh" "$VmAppDir/scripts/watchdog.sh"
+if ($rc -ne 0) { Fail "Failed to sync watchdog.sh" }
+$rc = Invoke-Ssh "sed -i 's/\r//' $VmAppDir/scripts/watchdog.sh"
+if ($rc -ne 0) { Fail "Failed to fix line endings in watchdog.sh" }
+$rc = Invoke-Ssh "chmod +x $VmAppDir/scripts/watchdog.sh"
+if ($rc -ne 0) { Fail "Failed to make watchdog.sh executable" }
+
+# Install cron job for watchdog (idempotent — removes old entry first)
+$cronJob = "*/5 * * * * TRACKER_APP_DIR=$VmAppDir $VmAppDir/scripts/watchdog.sh >> /var/log/tracker-watchdog.log 2>&1"
+$rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'watchdog.sh'; echo '$cronJob') | crontab -"
+if ($rc -ne 0) {
+    Write-Host "  WARNING: Failed to install watchdog cron job. Install manually:" -ForegroundColor Yellow
+    Write-Host "    crontab -e"
+    Write-Host "    $cronJob"
+} else {
+    Write-Host ("  " + $CHK + " Watchdog cron installed (every 5 min)")
+}
+
 # ---------------------------------------------------------------------------
 # Step 3: Deploy on VM
 # ---------------------------------------------------------------------------

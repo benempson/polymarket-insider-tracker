@@ -25,6 +25,9 @@ RUN uv sync --frozen --no-dev
 # =============================================================================
 FROM python:3.11-slim AS runtime
 
+# curl for Docker healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 # Non-root user for container security
 RUN useradd --system --uid 1001 --create-home appuser
 
