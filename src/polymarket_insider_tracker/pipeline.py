@@ -203,6 +203,15 @@ class Pipeline:
         """Initialize all pipeline components."""
         settings = self._settings
 
+        # Initialize Health Monitor
+        # Do this first so that the logging captures the following logs
+        logger.info("Initializing health monitor...")
+        self._health_monitor = HealthMonitor(get_pipeline_stats=self._get_health_stats)
+
+        # Attach in-memory log handler to root logger so /logs endpoint works
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self._health_monitor._log_handler)
+
         # Initialize Redis
         logger.debug("Initializing Redis connection...")
         self._redis = Redis.from_url(settings.redis.url)
@@ -264,14 +273,6 @@ class Pipeline:
             on_trade=self._on_trade,
             host=settings.polymarket.ws_url,
         )
-
-        # Initialize Health Monitor
-        logger.info("Initializing health monitor...")
-        self._health_monitor = HealthMonitor(get_pipeline_stats=self._get_health_stats)
-
-        # Attach in-memory log handler to root logger so /logs endpoint works
-        root_logger = logging.getLogger()
-        root_logger.addHandler(self._health_monitor._log_handler)
 
         logger.info("All components initialized")
 
