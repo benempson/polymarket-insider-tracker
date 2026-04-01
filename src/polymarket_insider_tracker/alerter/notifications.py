@@ -22,27 +22,28 @@ def _get_git_sha() -> str:
     return sha if sha and sha != "unknown" else "dev"
 
 
-def build_startup_message(started_at: datetime) -> FormattedAlert:
-    """Build a startup notification."""
+def _build_phase_message(phase: str, description: str, color: int) -> FormattedAlert:
+    """Build a startup phase notification."""
     sha = _get_git_sha()
-    ts = started_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts = datetime.now(tz=None).strftime("%Y-%m-%d %H:%M:%S")
 
-    title = "Tracker Started"
-    body = f"Version {sha} started at {ts}"
+    title = f"Tracker - {phase}"
+    body = f"[{sha}] {phase}: {description}"
 
     discord_embed = {
-        "title": "Polymarket Insider Tracker - Started",
-        "description": f"**Version:** `{sha}`\n**Started:** {ts}",
-        "color": 0x2ECC71,  # green
+        "title": f"Polymarket Insider Tracker - {phase}",
+        "description": f"**Version:** `{sha}`\n{description}",
+        "color": color,
+        "footer": {"text": ts},
     }
 
     telegram_md = (
-        f"*Polymarket Insider Tracker \\- Started*\n\n"
+        f"*Polymarket Insider Tracker \\- {_esc(phase)}*\n\n"
         f"*Version:* `{_esc(sha)}`\n"
-        f"*Started:* {_esc(ts)}"
+        f"{_esc(description)}"
     )
 
-    plain = f"Polymarket Insider Tracker started. Version: {sha}, Time: {ts}"
+    plain = f"[{sha}] {phase}: {description}"
 
     return FormattedAlert(
         title=title,
@@ -50,6 +51,33 @@ def build_startup_message(started_at: datetime) -> FormattedAlert:
         discord_embed=discord_embed,
         telegram_markdown=telegram_md,
         plain_text=plain,
+    )
+
+
+def build_starting_message() -> FormattedAlert:
+    """Phase 1: Pipeline is beginning startup."""
+    return _build_phase_message(
+        "Starting",
+        "Initializing components...",
+        0x3498DB,  # blue
+    )
+
+
+def build_initialized_message() -> FormattedAlert:
+    """Phase 2: All components initialized successfully."""
+    return _build_phase_message(
+        "Initialized",
+        "All components initialized. Starting background services...",
+        0xF39C12,  # amber
+    )
+
+
+def build_running_message() -> FormattedAlert:
+    """Phase 3: Pipeline is fully running."""
+    return _build_phase_message(
+        "Running",
+        "Pipeline is live and processing trades.",
+        0x2ECC71,  # green
     )
 
 

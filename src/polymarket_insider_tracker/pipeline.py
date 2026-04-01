@@ -20,9 +20,12 @@ from polymarket_insider_tracker.alerter.channels.discord import DiscordChannel
 from polymarket_insider_tracker.alerter.channels.telegram import TelegramChannel
 from polymarket_insider_tracker.alerter.dispatcher import AlertChannel, AlertDispatcher
 from polymarket_insider_tracker.alerter.formatter import AlertFormatter
+from polymarket_insider_tracker.alerter.models import FormattedAlert
 from polymarket_insider_tracker.alerter.notifications import (
     build_heartbeat_message,
-    build_startup_message,
+    build_initialized_message,
+    build_running_message,
+    build_starting_message,
 )
 from polymarket_insider_tracker.config import Settings, get_settings
 from polymarket_insider_tracker.detector.fresh_wallet import FreshWalletDetector
@@ -164,14 +167,18 @@ class Pipeline:
         logger.info("Starting pipeline...")
 
         try:
+            # Set up alerting first so we can send startup notifications
+            self._initialize_alerting()
+            await self._notify(build_starting_message())
+
             await self._initialize_components()
+            await self._notify(build_initialized_message())
+
             await self._start_background_services()
             self._stats.started_at = datetime.now(UTC)
             self._state = PipelineState.RUNNING
             logger.info("Pipeline started successfully")
-
-            # Send startup notification to configured channels
-            await self._send_startup_notification()
+            await self._notify(build_running_message())
         except Exception as e:
             self._state = PipelineState.ERROR
             self._stats.last_error = str(e)
@@ -261,12 +268,6 @@ class Pipeline:
         logger.info("Initializing risk scorer...")
         self._risk_scorer = RiskScorer(self._redis)
 
-        # Initialize Alerting
-        logger.info("Initializing alerting components...")
-        self._alert_formatter = AlertFormatter(verbosity="detailed")
-        channels = self._build_alert_channels()
-        self._alert_dispatcher = AlertDispatcher(channels)
-
         # Initialize Trade Stream
         logger.info("Initializing trade stream handler...")
         self._trade_stream = TradeStreamHandler(
@@ -289,22 +290,21 @@ class Pipeline:
             "last_error": stats.last_error,
         }
 
-    async def _send_startup_notification(self) -> None:
-        """Send a startup notification to all configured channels."""
+    async def _notify(self, msg: FormattedAlert) -> None:
+        """Send a system notification to all configured channels."""
         if not self._alert_dispatcher or not self._alert_dispatcher.channels:
             return
         if self._dry_run:
-            logger.info("[DRY RUN] Would send startup notification")
+            logger.info("[DRY RUN] Would send notification: %s", msg.title)
             return
         try:
-            msg = build_startup_message(self._stats.started_at or datetime.now(UTC))
             result = await self._alert_dispatcher.dispatch(msg)
             if result.all_succeeded:
-                logger.info("Startup notification sent")
+                logger.info("Notification sent: %s", msg.title)
             else:
-                logger.warning("Startup notification partially failed")
+                logger.warning("Notification partially failed: %s", msg.title)
         except Exception as e:
-            logger.error("Failed to send startup notification: %s", e)
+            logger.error("Failed to send notification '%s': %s", msg.title, e)
 
     async def _heartbeat_loop(self) -> None:
         """Periodically send heartbeat notifications during configured hours."""
@@ -364,6 +364,13 @@ class Pipeline:
             except Exception as e:
                 logger.error("Error in heartbeat loop: %s", e)
                 await asyncio.sleep(60)
+
+    def _initialize_alerting(self) -> None:
+        """Initialize alert channels and dispatcher (must run before notifications)."""
+        logger.info("Initializing alerting components...")
+        self._alert_formatter = AlertFormatter(verbosity="detailed")
+        channels = self._build_alert_channels()
+        self._alert_dispatcher = AlertDispatcher(channels)
 
     def _build_alert_channels(self) -> list[AlertChannel]:
         """Build list of enabled alert channels."""
