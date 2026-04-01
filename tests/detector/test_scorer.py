@@ -12,7 +12,10 @@ from polymarket_insider_tracker.detector.models import (
     SizeAnomalySignal,
 )
 from polymarket_insider_tracker.detector.scorer import (
-    DEFAULT_ALERT_THRESHOLD,
+    DEFAULT_HIGH_THRESHOLD as DEFAULT_ALERT_THRESHOLD,
+)
+from polymarket_insider_tracker.detector.scorer import (
+    DEFAULT_INFO_THRESHOLD,
     DEFAULT_WEIGHTS,
     MULTI_SIGNAL_BONUS_2,
     RiskScorer,
@@ -281,7 +284,7 @@ class TestRiskScorerInit:
         """Test scorer initializes with default values."""
         scorer = RiskScorer(mock_redis)
 
-        assert scorer._alert_threshold == DEFAULT_ALERT_THRESHOLD
+        assert scorer._high_threshold == DEFAULT_ALERT_THRESHOLD
         assert scorer._weights == DEFAULT_WEIGHTS
         assert scorer._dedup_window == 3600
 
@@ -291,11 +294,11 @@ class TestRiskScorerInit:
         scorer = RiskScorer(
             mock_redis,
             weights=custom_weights,
-            alert_threshold=0.7,
+            high_threshold=0.7,
             dedup_window_seconds=1800,
         )
 
-        assert scorer._alert_threshold == 0.7
+        assert scorer._high_threshold == 0.7
         assert scorer._weights == custom_weights
         assert scorer._dedup_window == 1800
 
@@ -333,9 +336,9 @@ class TestWeightedScoreCalculation:
 
         score, count = scorer.calculate_weighted_score(bundle)
 
-        # 0.8 confidence * 0.4 weight = 0.32
-        expected = 0.8 * DEFAULT_WEIGHTS["fresh_wallet"]
-        assert score == pytest.approx(expected)
+        # 0.8 confidence * 0.35 weight = 0.28, but single-signal floor
+        # kicks in (confidence >= 0.8) raising score to info threshold 0.4
+        assert score == pytest.approx(DEFAULT_INFO_THRESHOLD)
         assert count == 1
 
     def test_size_anomaly_only(
@@ -393,7 +396,7 @@ class TestWeightedScoreCalculation:
         fresh_wallet_signal: FreshWalletSignal,
         size_anomaly_signal: SizeAnomalySignal,
     ) -> None:
-        """Test 20% bonus for two signals."""
+        """Test 15% bonus for two signals."""
         scorer = RiskScorer(mock_redis)
         bundle = SignalBundle(
             trade_event=sample_trade,
@@ -438,7 +441,13 @@ class TestWeightedScoreCalculation:
             factors={},
         )
 
-        scorer = RiskScorer(mock_redis)
+        # Use high weights to guarantee exceeding 1.0 after bonus
+        heavy_weights = {
+            "fresh_wallet": 0.6,
+            "size_anomaly": 0.5,
+            "niche_market": 0.3,
+        }
+        scorer = RiskScorer(mock_redis, weights=heavy_weights)
         bundle = SignalBundle(
             trade_event=sample_trade,
             fresh_wallet_signal=fresh_signal,

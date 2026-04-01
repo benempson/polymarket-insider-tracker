@@ -65,6 +65,20 @@ def get_triggered_signals(assessment: RiskAssessment) -> list[str]:
         signals.append("Large Position")
         if assessment.size_anomaly_signal.is_niche_market:
             signals.append("Niche Market")
+    if assessment.sniper_cluster_signal:
+        n = assessment.sniper_cluster_signal.cluster_size
+        signals.append(f"Wallet Cluster ({n})")
+    if assessment.conviction_signal:
+        label = "Contrarian Bet" if assessment.conviction_signal.is_contrarian else "High Conviction"
+        signals.append(label)
+    if assessment.timing_signal:
+        h = assessment.timing_signal.hours_to_expiry
+        signals.append(f"Near Expiry ({h:.0f}h)")
+    if assessment.multi_market_signal:
+        n = assessment.multi_market_signal.markets_traded
+        signals.append(f"Multi-Market ({n})")
+    if assessment.whale_signal:
+        signals.append("Whale Activity")
     return signals
 
 
@@ -104,8 +118,12 @@ class AlertFormatter:
         # Build links
         links = self._build_links(assessment)
 
-        # Build title
-        title = f"🚨 Suspicious Activity Detected - {risk_level} Risk"
+        # Build title — differentiate info vs high tier
+        tier = getattr(assessment, "alert_tier", "high")
+        if tier == "info":
+            title = f"ℹ️ Activity of Interest - {risk_level} Risk"
+        else:
+            title = f"🚨 Suspicious Activity Detected - {risk_level} Risk"
 
         # Build body based on verbosity
         body = self._build_body(assessment, wallet_short, risk_level, signals)
@@ -238,11 +256,19 @@ class AlertFormatter:
             # Add confidence breakdown
             confidences = []
             if assessment.fresh_wallet_signal:
-                conf = assessment.fresh_wallet_signal.confidence
-                confidences.append(f"Fresh Wallet: {conf:.0%}")
+                confidences.append(f"Fresh Wallet: {assessment.fresh_wallet_signal.confidence:.0%}")
             if assessment.size_anomaly_signal:
-                conf = assessment.size_anomaly_signal.confidence
-                confidences.append(f"Size Anomaly: {conf:.0%}")
+                confidences.append(f"Size Anomaly: {assessment.size_anomaly_signal.confidence:.0%}")
+            if assessment.sniper_cluster_signal:
+                confidences.append(f"Cluster: {assessment.sniper_cluster_signal.confidence:.0%}")
+            if assessment.conviction_signal:
+                confidences.append(f"Conviction: {assessment.conviction_signal.confidence:.0%}")
+            if assessment.timing_signal:
+                confidences.append(f"Timing: {assessment.timing_signal.confidence:.0%}")
+            if assessment.multi_market_signal:
+                confidences.append(f"Multi-Mkt: {assessment.multi_market_signal.confidence:.0%}")
+            if assessment.whale_signal:
+                confidences.append(f"Whale: {assessment.whale_signal.confidence:.0%}")
 
             if confidences:
                 fields.append(

@@ -28,11 +28,17 @@ from polymarket_insider_tracker.alerter.notifications import (
     build_starting_message,
 )
 from polymarket_insider_tracker.config import Settings, get_settings
+from polymarket_insider_tracker.detector.conviction import ConvictionDetector
 from polymarket_insider_tracker.detector.fresh_wallet import FreshWalletDetector
+from polymarket_insider_tracker.detector.multi_market import MultiMarketDetector
 from polymarket_insider_tracker.detector.scorer import RiskScorer, SignalBundle
 from polymarket_insider_tracker.detector.size_anomaly import SizeAnomalyDetector
+from polymarket_insider_tracker.detector.timing import TimingDetector
+from polymarket_insider_tracker.detector.wallet_cluster import WalletClusterDetector
+from polymarket_insider_tracker.detector.whale_tracker import WhaleTracker
 from polymarket_insider_tracker.ingestor.clob_client import ClobClient
 from polymarket_insider_tracker.ingestor.health import HealthMonitor
+from polymarket_insider_tracker.ingestor.market_stats import MarketStatsAggregator
 from polymarket_insider_tracker.ingestor.metadata_sync import MarketMetadataSync
 from polymarket_insider_tracker.ingestor.websocket import TradeStreamHandler
 from polymarket_insider_tracker.profiler.analyzer import WalletAnalyzer
@@ -43,8 +49,13 @@ if TYPE_CHECKING:
     from typing import Any
 
     from polymarket_insider_tracker.detector.models import (
+        ConvictionSignal,
         FreshWalletSignal,
+        MultiMarketSignal,
         SizeAnomalySignal,
+        SniperClusterSignal,
+        TimingSignal,
+        WhaleSignal,
     )
     from polymarket_insider_tracker.ingestor.models import TradeEvent
 
@@ -122,8 +133,14 @@ class Pipeline:
         self._clob_client: ClobClient | None = None
         self._metadata_sync: MarketMetadataSync | None = None
         self._wallet_analyzer: WalletAnalyzer | None = None
+        self._market_stats: MarketStatsAggregator | None = None
         self._fresh_wallet_detector: FreshWalletDetector | None = None
         self._size_anomaly_detector: SizeAnomalyDetector | None = None
+        self._conviction_detector: ConvictionDetector | None = None
+        self._timing_detector: TimingDetector | None = None
+        self._wallet_cluster_detector: WalletClusterDetector | None = None
+        self._multi_market_detector: MultiMarketDetector | None = None
+        self._whale_tracker: WhaleTracker | None = None
         self._risk_scorer: RiskScorer | None = None
         self._alert_formatter: AlertFormatter | None = None
         self._alert_dispatcher: AlertDispatcher | None = None
@@ -259,10 +276,23 @@ class Pipeline:
             redis=self._redis,
         )
 
+        # Initialize rolling market stats aggregator
+        logger.info("Initializing market stats aggregator...")
+        self._market_stats = MarketStatsAggregator(redis=self._redis)
+
         # Initialize Detectors
         logger.info("Initializing detectors...")
         self._fresh_wallet_detector = FreshWalletDetector(self._wallet_analyzer)
-        self._size_anomaly_detector = SizeAnomalyDetector(self._metadata_sync)
+        self._size_anomaly_detector = SizeAnomalyDetector(
+            self._metadata_sync, market_stats=self._market_stats
+        )
+        self._conviction_detector = ConvictionDetector()
+        self._timing_detector = TimingDetector(self._metadata_sync)
+        self._wallet_cluster_detector = WalletClusterDetector(
+            self._redis, self._wallet_analyzer
+        )
+        self._multi_market_detector = MultiMarketDetector(self._redis)
+        self._whale_tracker = WhaleTracker(self._redis)
 
         # Initialize Risk Scorer
         logger.info("Initializing risk scorer...")
@@ -497,10 +527,32 @@ class Pipeline:
         self._stats.last_trade_time = datetime.now(UTC)
 
         try:
-            # Run detectors in parallel
-            fresh_signal, size_signal = await asyncio.gather(
+            # Record trade in rolling market stats (before detectors so stats are current)
+            if self._market_stats:
+                await self._market_stats.record_trade(
+                    trade.market_id,
+                    trade.wallet_address,
+                    trade.notional_value,
+                    trade.trade_id,
+                )
+
+            # Run all detectors in parallel
+            (
+                fresh_signal,
+                size_signal,
+                cluster_signal,
+                conviction_signal,
+                timing_signal,
+                multi_market_signal,
+                whale_signal,
+            ) = await asyncio.gather(
                 self._detect_fresh_wallet(trade),
                 self._detect_size_anomaly(trade),
+                self._detect_wallet_cluster(trade),
+                self._detect_conviction(trade),
+                self._detect_timing(trade),
+                self._detect_multi_market(trade),
+                self._detect_whale(trade),
             )
 
             # Bundle signals
@@ -508,10 +560,20 @@ class Pipeline:
                 trade_event=trade,
                 fresh_wallet_signal=fresh_signal,
                 size_anomaly_signal=size_signal,
+                sniper_cluster_signal=cluster_signal,
+                conviction_signal=conviction_signal,
+                timing_signal=timing_signal,
+                multi_market_signal=multi_market_signal,
+                whale_signal=whale_signal,
             )
 
-            # Score and potentially alert
-            if fresh_signal or size_signal:
+            # Score and potentially alert if any signal fired
+            has_signal = any([
+                fresh_signal, size_signal, cluster_signal,
+                conviction_signal, timing_signal,
+                multi_market_signal, whale_signal,
+            ])
+            if has_signal:
                 self._stats.signals_generated += 1
                 await self._score_and_alert(bundle)
 
@@ -538,6 +600,51 @@ class Pipeline:
             return await self._size_anomaly_detector.analyze(trade)
         except Exception as e:
             logger.warning("Size anomaly detection failed for %s: %s", trade.trade_id, e)
+            return None
+
+    async def _detect_wallet_cluster(self, trade: TradeEvent) -> SniperClusterSignal | None:
+        if not self._wallet_cluster_detector:
+            return None
+        try:
+            return await self._wallet_cluster_detector.analyze(trade)
+        except Exception as e:
+            logger.warning("Wallet cluster detection failed for %s: %s", trade.trade_id, e)
+            return None
+
+    async def _detect_conviction(self, trade: TradeEvent) -> ConvictionSignal | None:
+        if not self._conviction_detector:
+            return None
+        try:
+            return await self._conviction_detector.analyze(trade)
+        except Exception as e:
+            logger.warning("Conviction detection failed for %s: %s", trade.trade_id, e)
+            return None
+
+    async def _detect_timing(self, trade: TradeEvent) -> TimingSignal | None:
+        if not self._timing_detector:
+            return None
+        try:
+            return await self._timing_detector.analyze(trade)
+        except Exception as e:
+            logger.warning("Timing detection failed for %s: %s", trade.trade_id, e)
+            return None
+
+    async def _detect_multi_market(self, trade: TradeEvent) -> MultiMarketSignal | None:
+        if not self._multi_market_detector:
+            return None
+        try:
+            return await self._multi_market_detector.analyze(trade)
+        except Exception as e:
+            logger.warning("Multi-market detection failed for %s: %s", trade.trade_id, e)
+            return None
+
+    async def _detect_whale(self, trade: TradeEvent) -> WhaleSignal | None:
+        if not self._whale_tracker:
+            return None
+        try:
+            return await self._whale_tracker.analyze(trade)
+        except Exception as e:
+            logger.warning("Whale detection failed for %s: %s", trade.trade_id, e)
             return None
 
     async def _score_and_alert(self, bundle: SignalBundle) -> None:

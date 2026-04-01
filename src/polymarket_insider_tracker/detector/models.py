@@ -197,6 +197,100 @@ class SniperClusterSignal:
 
 
 @dataclass(frozen=True)
+class ConvictionSignal:
+    """Signal for trades showing strong directional conviction at extreme prices."""
+
+    trade_event: TradeEvent
+    price_extremity: float  # distance from 0.50 (0.0–0.5)
+    is_contrarian: bool
+    confidence: float
+    factors: dict[str, float]
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def wallet_address(self) -> str:
+        return self.trade_event.wallet_address
+
+    @property
+    def market_id(self) -> str:
+        return self.trade_event.market_id
+
+    @property
+    def is_high_confidence(self) -> bool:
+        return self.confidence >= 0.7
+
+
+@dataclass(frozen=True)
+class TimingSignal:
+    """Signal for trades placed close to market expiry."""
+
+    trade_event: TradeEvent
+    hours_to_expiry: float
+    market_end_date: datetime
+    confidence: float
+    factors: dict[str, float]
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def wallet_address(self) -> str:
+        return self.trade_event.wallet_address
+
+    @property
+    def market_id(self) -> str:
+        return self.trade_event.market_id
+
+    @property
+    def is_high_confidence(self) -> bool:
+        return self.confidence >= 0.7
+
+
+@dataclass(frozen=True)
+class MultiMarketSignal:
+    """Signal for wallets trading many markets in a short window."""
+
+    trade_event: TradeEvent
+    wallet_address: str
+    markets_traded: int
+    window_minutes: int
+    confidence: float
+    factors: dict[str, float]
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def market_id(self) -> str:
+        return self.trade_event.market_id
+
+    @property
+    def is_high_confidence(self) -> bool:
+        return self.confidence >= 0.7
+
+
+@dataclass(frozen=True)
+class WhaleSignal:
+    """Signal when a high-volume wallet enters a new market."""
+
+    trade_event: TradeEvent
+    wallet_total_volume: Decimal
+    wallet_trade_count: int
+    wallet_markets_count: int
+    confidence: float
+    factors: dict[str, float]
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def wallet_address(self) -> str:
+        return self.trade_event.wallet_address
+
+    @property
+    def market_id(self) -> str:
+        return self.trade_event.market_id
+
+    @property
+    def is_high_confidence(self) -> bool:
+        return self.confidence >= 0.7
+
+
+@dataclass(frozen=True)
 class RiskAssessment:
     """Combined risk assessment aggregating all signal types.
 
@@ -229,6 +323,14 @@ class RiskAssessment:
     signals_triggered: int
     weighted_score: float
     should_alert: bool
+
+    # Optional signals (all default to None)
+    sniper_cluster_signal: SniperClusterSignal | None = None
+    conviction_signal: ConvictionSignal | None = None
+    timing_signal: TimingSignal | None = None
+    multi_market_signal: MultiMarketSignal | None = None
+    whale_signal: WhaleSignal | None = None
+    alert_tier: str = "none"  # "none", "info", "high"
 
     # Metadata
     assessment_id: str = field(default_factory=lambda: str(uuid.uuid4()))

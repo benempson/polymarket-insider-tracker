@@ -8,6 +8,7 @@ import logging
 from decimal import Decimal
 
 from polymarket_insider_tracker.detector.models import SizeAnomalySignal
+from polymarket_insider_tracker.ingestor.market_stats import MarketStatsAggregator
 from polymarket_insider_tracker.ingestor.metadata_sync import MarketMetadataSync
 from polymarket_insider_tracker.ingestor.models import MarketMetadata, TradeEvent
 
@@ -56,6 +57,7 @@ class SizeAnomalyDetector:
         self,
         metadata_sync: MarketMetadataSync,
         *,
+        market_stats: MarketStatsAggregator | None = None,
         volume_threshold: float = DEFAULT_VOLUME_THRESHOLD,
         book_threshold: float = DEFAULT_BOOK_THRESHOLD,
         niche_volume_threshold: Decimal = DEFAULT_NICHE_VOLUME_THRESHOLD,
@@ -64,11 +66,13 @@ class SizeAnomalyDetector:
 
         Args:
             metadata_sync: MarketMetadataSync for fetching market metadata.
+            market_stats: Optional rolling market stats from the trade stream.
             volume_threshold: Threshold for volume impact (default 0.02 = 2%).
             book_threshold: Threshold for book impact (default 0.05 = 5%).
             niche_volume_threshold: Volume below which market is niche ($50k).
         """
         self._metadata_sync = metadata_sync
+        self._market_stats = market_stats
         self._volume_threshold = volume_threshold
         self._book_threshold = book_threshold
         self._niche_volume_threshold = niche_volume_threshold
@@ -117,6 +121,21 @@ class SizeAnomalyDetector:
             metadata = self._create_minimal_metadata(trade)
 
         trade_size = trade.notional_value
+
+        # Pull volume from rolling market stats if not provided explicitly
+        if daily_volume is None and self._market_stats is not None:
+            try:
+                stats = await self._market_stats.get_stats(trade.market_id)
+                if stats is not None:
+                    daily_volume = stats.volume_24h
+                    # Approximate book depth as median_trade_size * sqrt(trade_count)
+                    if book_depth is None and stats.median_trade_size and stats.trade_count_24h > 0:
+                        import math
+                        book_depth = stats.median_trade_size * Decimal(
+                            str(math.sqrt(stats.trade_count_24h))
+                        )
+            except Exception as e:
+                logger.debug("Failed to get market stats for %s: %s", trade.market_id[:10], e)
 
         # Calculate impacts
         volume_impact = self._calculate_volume_impact(trade_size, daily_volume)
