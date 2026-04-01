@@ -45,6 +45,10 @@ COPY --from=builder /app/alembic.ini ./
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 
+# Git commit SHA baked in at build time
+ARG GIT_SHA="unknown"
+ENV GIT_SHA=${GIT_SHA}
+
 # Health check port (configurable via HEALTH_PORT env var)
 EXPOSE 8080
 

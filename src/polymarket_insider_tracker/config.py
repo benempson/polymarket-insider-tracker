@@ -197,6 +197,26 @@ class Settings(BaseSettings):
         alias="DRY_RUN",
         description="Run without sending actual alerts",
     )
+    heartbeat_interval_minutes: int = Field(
+        default=240,
+        alias="HEARTBEAT_INTERVAL_MINUTES",
+        description="Minutes between heartbeat notifications (0 to disable)",
+        ge=0,
+    )
+    heartbeat_start_hour: int = Field(
+        default=9,
+        alias="HEARTBEAT_START_HOUR",
+        description="Hour (server time) to start sending heartbeats",
+        ge=0,
+        le=23,
+    )
+    heartbeat_end_hour: int = Field(
+        default=21,
+        alias="HEARTBEAT_END_HOUR",
+        description="Hour (server time) to stop sending heartbeats",
+        ge=0,
+        le=23,
+    )
 
     def get_logging_level(self) -> int:
         """Get the numeric logging level."""

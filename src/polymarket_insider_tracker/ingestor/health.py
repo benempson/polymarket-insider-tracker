@@ -457,7 +457,7 @@ class HealthMonitor:
 
         if self._get_pipeline_stats is not None:
             body["pipeline"] = self._get_pipeline_stats()
-        
+
         for name, stream in report.streams.items():
             body["streams"][name] = {
                 "status": stream.status.value,

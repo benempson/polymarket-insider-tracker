@@ -20,6 +20,10 @@ from polymarket_insider_tracker.alerter.channels.discord import DiscordChannel
 from polymarket_insider_tracker.alerter.channels.telegram import TelegramChannel
 from polymarket_insider_tracker.alerter.dispatcher import AlertChannel, AlertDispatcher
 from polymarket_insider_tracker.alerter.formatter import AlertFormatter
+from polymarket_insider_tracker.alerter.notifications import (
+    build_heartbeat_message,
+    build_startup_message,
+)
 from polymarket_insider_tracker.config import Settings, get_settings
 from polymarket_insider_tracker.detector.fresh_wallet import FreshWalletDetector
 from polymarket_insider_tracker.detector.scorer import RiskScorer, SignalBundle
@@ -126,6 +130,7 @@ class Pipeline:
         # Synchronization
         self._stop_event: asyncio.Event | None = None
         self._stream_task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     @property
     def state(self) -> PipelineState:
@@ -164,6 +169,9 @@ class Pipeline:
             self._stats.started_at = datetime.now(UTC)
             self._state = PipelineState.RUNNING
             logger.info("Pipeline started successfully")
+
+            # Send startup notification to configured channels
+            await self._send_startup_notification()
         except Exception as e:
             self._state = PipelineState.ERROR
             self._stats.last_error = str(e)
@@ -280,6 +288,82 @@ class Pipeline:
             "last_error": stats.last_error,
         }
 
+    async def _send_startup_notification(self) -> None:
+        """Send a startup notification to all configured channels."""
+        if not self._alert_dispatcher or not self._alert_dispatcher.channels:
+            return
+        if self._dry_run:
+            logger.info("[DRY RUN] Would send startup notification")
+            return
+        try:
+            msg = build_startup_message(self._stats.started_at or datetime.now(UTC))
+            result = await self._alert_dispatcher.dispatch(msg)
+            if result.all_succeeded:
+                logger.info("Startup notification sent")
+            else:
+                logger.warning("Startup notification partially failed")
+        except Exception as e:
+            logger.error("Failed to send startup notification: %s", e)
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically send heartbeat notifications during configured hours."""
+        interval = self._settings.heartbeat_interval_minutes * 60
+        start_hour = self._settings.heartbeat_start_hour
+        end_hour = self._settings.heartbeat_end_hour
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+
+                # Check if current server time is within the notification window
+                now = datetime.now()
+                if start_hour <= end_hour:
+                    in_window = start_hour <= now.hour < end_hour
+                else:
+                    # Wraps midnight (e.g. 21-09)
+                    in_window = now.hour >= start_hour or now.hour < end_hour
+
+                if not in_window:
+                    logger.debug("Heartbeat skipped - outside notification window (%d:00-%d:00)", start_hour, end_hour)
+                    continue
+
+                if self._dry_run:
+                    logger.info("[DRY RUN] Would send heartbeat notification")
+                    continue
+
+                if not self._alert_dispatcher or not self._health_monitor:
+                    continue
+
+                # Get health data from the monitor
+                report = self._health_monitor.get_health_report()
+                health_data: dict[str, Any] = {
+                    "status": report.status.value,
+                    "streams": {},
+                }
+                for name, stream in report.streams.items():
+                    health_data["streams"][name] = {
+                        "status": stream.status.value,
+                        "events_received": stream.events_received,
+                        "events_per_second": round(stream.events_per_second, 2),
+                    }
+                health_data["pipeline"] = self._get_health_stats()
+
+                msg = build_heartbeat_message(
+                    health_data,
+                    report.uptime_seconds,
+                )
+                result = await self._alert_dispatcher.dispatch(msg)
+                if result.all_succeeded:
+                    logger.info("Heartbeat notification sent")
+                else:
+                    logger.warning("Heartbeat notification partially failed")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in heartbeat loop: %s", e)
+                await asyncio.sleep(60)
+
     def _build_alert_channels(self) -> list[AlertChannel]:
         """Build list of enabled alert channels."""
         channels: list[AlertChannel] = []
@@ -324,6 +408,11 @@ class Pipeline:
             logger.debug("Starting trade stream...")
             self._stream_task = asyncio.create_task(self._run_trade_stream())
 
+        # Start heartbeat task
+        if self._settings.heartbeat_interval_minutes > 0 and self._alert_dispatcher:
+            logger.debug("Starting heartbeat task (every %dm)...", self._settings.heartbeat_interval_minutes)
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
     async def _run_trade_stream(self) -> None:
         """Run the trade stream in a task."""
         if not self._trade_stream:
@@ -351,6 +440,13 @@ class Pipeline:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._stream_task
             self._stream_task = None
+
+        # Cancel heartbeat task
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+            self._heartbeat_task = None
 
         # Stop metadata sync
         if self._metadata_sync:
