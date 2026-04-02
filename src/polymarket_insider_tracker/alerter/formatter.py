@@ -301,42 +301,43 @@ class AlertFormatter:
         links: dict[str, str],
     ) -> str:
         """Build Telegram-optimized markdown format."""
+        esc = self._escape_telegram_markdown
         trade = assessment.trade_event
 
         lines = ["🚨 *Suspicious Activity Detected*", ""]
 
         # Wallet with link
+        # Content inside backticks doesn't need escaping in MarkdownV2
         wallet_line = f"*Wallet:* `{wallet_short}`"
         if assessment.fresh_wallet_signal:
             age_hours = assessment.fresh_wallet_signal.wallet_profile.age_hours
             if age_hours is not None:
                 if age_hours < 1:
-                    wallet_line += f" \\(Age: {int(age_hours * 60)}m\\)"
+                    wallet_line += f" \\(Age: {esc(str(int(age_hours * 60)))}m\\)"
                 else:
-                    wallet_line += f" \\(Age: {age_hours:.0f}h\\)"
+                    wallet_line += f" \\(Age: {esc(f'{age_hours:.0f}')}h\\)"
         lines.append(wallet_line)
 
         # Risk score
-        lines.append(f"*Risk Score:* {assessment.weighted_score:.2f} \\({risk_level}\\)")
+        lines.append(f"*Risk Score:* {esc(f'{assessment.weighted_score:.2f}')} \\({esc(risk_level)}\\)")
 
         # Market
         market_title = trade.event_title or trade.market_slug or "Unknown Market"
-        # Escape special Telegram markdown characters
-        market_title_escaped = self._escape_telegram_markdown(market_title)
+        market_title_escaped = esc(market_title)
         if "market" in links:
             lines.append(f"*Market:* [{market_title_escaped}]({links['market']})")
         else:
             lines.append(f"*Market:* {market_title_escaped}")
 
         # Trade details
-        usdc_value = format_usdc(trade.notional_value).replace("$", "\\$")
+        usdc_value = esc(format_usdc(trade.notional_value))
         lines.append(
-            f"*Trade:* {trade.side} {trade.outcome} @ \\${trade.price:.3f} \\| {usdc_value}"
+            f"*Trade:* {esc(trade.side)} {esc(trade.outcome)} @ {esc(f'${trade.price:.3f}')} \\| {usdc_value}"
         )
 
         # Signals
         if signals:
-            lines.append(f"*Signals:* {', '.join(signals)}")
+            lines.append(f"*Signals:* {esc(', '.join(signals))}")
 
         # Links
         lines.append("")

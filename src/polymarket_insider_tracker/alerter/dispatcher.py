@@ -139,7 +139,7 @@ class AlertDispatcher:
         channel_name = channel.name
 
         if not self._should_attempt(channel_name):
-            logger.debug(f"Skipping {channel_name} - circuit open")
+            logger.warning(f"Skipping {channel_name} - circuit breaker open")
             return (channel_name, False)
 
         try:

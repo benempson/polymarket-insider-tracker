@@ -409,10 +409,10 @@ class TestTelegramMarkdown:
         assert "`0x1234...5678`" in result.telegram_markdown
 
     def test_telegram_includes_risk_score(self, high_risk_assessment: RiskAssessment) -> None:
-        """Test that Telegram message includes risk score."""
+        """Test that Telegram message includes risk score (escaped for MarkdownV2)."""
         formatter = AlertFormatter()
         result = formatter.format(high_risk_assessment)
-        assert "0.82" in result.telegram_markdown
+        assert "0\\.82" in result.telegram_markdown
         assert "HIGH" in result.telegram_markdown
 
     def test_telegram_includes_links(self, high_risk_assessment: RiskAssessment) -> None:
