@@ -253,23 +253,7 @@ class AlertFormatter:
 
         # Add detailed info for detailed verbosity
         if self.verbosity == "detailed":
-            # Add confidence breakdown
-            confidences = []
-            if assessment.fresh_wallet_signal:
-                confidences.append(f"Fresh Wallet: {assessment.fresh_wallet_signal.confidence:.0%}")
-            if assessment.size_anomaly_signal:
-                confidences.append(f"Size Anomaly: {assessment.size_anomaly_signal.confidence:.0%}")
-            if assessment.sniper_cluster_signal:
-                confidences.append(f"Cluster: {assessment.sniper_cluster_signal.confidence:.0%}")
-            if assessment.conviction_signal:
-                confidences.append(f"Conviction: {assessment.conviction_signal.confidence:.0%}")
-            if assessment.timing_signal:
-                confidences.append(f"Timing: {assessment.timing_signal.confidence:.0%}")
-            if assessment.multi_market_signal:
-                confidences.append(f"Multi-Mkt: {assessment.multi_market_signal.confidence:.0%}")
-            if assessment.whale_signal:
-                confidences.append(f"Whale: {assessment.whale_signal.confidence:.0%}")
-
+            confidences = self._build_confidence_list(assessment)
             if confidences:
                 fields.append(
                     {
@@ -291,6 +275,26 @@ class AlertFormatter:
             embed["url"] = links["wallet"]
 
         return embed
+
+    @staticmethod
+    def _build_confidence_list(assessment: RiskAssessment) -> list[str]:
+        """Build list of per-signal confidence strings."""
+        confidences = []
+        if assessment.fresh_wallet_signal:
+            confidences.append(f"Fresh Wallet: {assessment.fresh_wallet_signal.confidence:.0%}")
+        if assessment.size_anomaly_signal:
+            confidences.append(f"Size Anomaly: {assessment.size_anomaly_signal.confidence:.0%}")
+        if assessment.sniper_cluster_signal:
+            confidences.append(f"Cluster: {assessment.sniper_cluster_signal.confidence:.0%}")
+        if assessment.conviction_signal:
+            confidences.append(f"Conviction: {assessment.conviction_signal.confidence:.0%}")
+        if assessment.timing_signal:
+            confidences.append(f"Timing: {assessment.timing_signal.confidence:.0%}")
+        if assessment.multi_market_signal:
+            confidences.append(f"Multi-Mkt: {assessment.multi_market_signal.confidence:.0%}")
+        if assessment.whale_signal:
+            confidences.append(f"Whale: {assessment.whale_signal.confidence:.0%}")
+        return confidences
 
     def _build_telegram_markdown(
         self,
@@ -338,6 +342,11 @@ class AlertFormatter:
         # Signals
         if signals:
             lines.append(f"*Signals:* {esc(', '.join(signals))}")
+
+        # Confidence breakdown
+        confidences = self._build_confidence_list(assessment)
+        if confidences:
+            lines.append(f"*Confidence:* {esc(' | '.join(confidences))}")
 
         # Links
         lines.append("")

@@ -336,9 +336,9 @@ class TestWeightedScoreCalculation:
 
         score, count = scorer.calculate_weighted_score(bundle)
 
-        # 0.8 confidence * 0.35 weight = 0.28, but single-signal floor
-        # kicks in (confidence >= 0.8) raising score to info threshold 0.4
-        assert score == pytest.approx(DEFAULT_INFO_THRESHOLD)
+        # 0.8 confidence * 0.35 weight = 0.28
+        # Single signal alone cannot reach info threshold (0.55)
+        assert score == pytest.approx(0.28)
         assert count == 1
 
     def test_size_anomaly_only(
@@ -488,7 +488,7 @@ class TestAssessMethod:
 
         assert assessment.should_alert is True
         assert assessment.signals_triggered == 2
-        assert assessment.weighted_score >= DEFAULT_ALERT_THRESHOLD
+        assert assessment.weighted_score >= DEFAULT_INFO_THRESHOLD
 
     @pytest.mark.asyncio
     async def test_assess_no_alert_below_threshold(

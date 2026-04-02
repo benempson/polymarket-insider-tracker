@@ -25,8 +25,8 @@ from polymarket_insider_tracker.ingestor.models import TradeEvent
 logger = logging.getLogger(__name__)
 
 # Default configuration
-DEFAULT_INFO_THRESHOLD = 0.4
-DEFAULT_HIGH_THRESHOLD = 0.6
+DEFAULT_INFO_THRESHOLD = 0.55
+DEFAULT_HIGH_THRESHOLD = 0.7
 DEFAULT_DEDUP_WINDOW_SECONDS = 3600  # 1 hour
 DEFAULT_REDIS_KEY_PREFIX = "polymarket:dedup:"
 
@@ -47,8 +47,6 @@ MULTI_SIGNAL_BONUS_2 = 1.15
 MULTI_SIGNAL_BONUS_3 = 1.25
 MULTI_SIGNAL_BONUS_4 = 1.35
 
-# If any single signal has confidence >= this, floor the score at info threshold
-HIGH_CONFIDENCE_SINGLE_SIGNAL = 0.8
 
 
 @dataclass
@@ -160,21 +158,18 @@ class RiskScorer:
         """Calculate weighted score from all signals."""
         score = 0.0
         signals_triggered = 0
-        max_single_confidence = 0.0
 
         # Fresh wallet signal
         if bundle.fresh_wallet_signal is not None:
             w = self._weights.get("fresh_wallet", 0.0)
             score += bundle.fresh_wallet_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.fresh_wallet_signal.confidence)
 
         # Size anomaly signal
         if bundle.size_anomaly_signal is not None:
             w = self._weights.get("size_anomaly", 0.0)
             score += bundle.size_anomaly_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.size_anomaly_signal.confidence)
 
             # Niche market bonus
             if bundle.size_anomaly_signal.is_niche_market:
@@ -186,35 +181,30 @@ class RiskScorer:
             w = self._weights.get("sniper_cluster", 0.0)
             score += bundle.sniper_cluster_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.sniper_cluster_signal.confidence)
 
         # Conviction signal
         if bundle.conviction_signal is not None:
             w = self._weights.get("conviction", 0.0)
             score += bundle.conviction_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.conviction_signal.confidence)
 
         # Timing signal
         if bundle.timing_signal is not None:
             w = self._weights.get("timing", 0.0)
             score += bundle.timing_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.timing_signal.confidence)
 
         # Multi-market signal
         if bundle.multi_market_signal is not None:
             w = self._weights.get("multi_market", 0.0)
             score += bundle.multi_market_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.multi_market_signal.confidence)
 
         # Whale signal
         if bundle.whale_signal is not None:
             w = self._weights.get("whale", 0.0)
             score += bundle.whale_signal.confidence * w
             signals_triggered += 1
-            max_single_confidence = max(max_single_confidence, bundle.whale_signal.confidence)
 
         # Multi-signal bonus
         if signals_triggered >= 4:
@@ -223,11 +213,6 @@ class RiskScorer:
             score *= MULTI_SIGNAL_BONUS_3
         elif signals_triggered >= 2:
             score *= MULTI_SIGNAL_BONUS_2
-
-        # Single high-confidence signal floor: ensure a very strong single
-        # signal can still reach the info threshold on its own
-        if max_single_confidence >= HIGH_CONFIDENCE_SINGLE_SIGNAL and score < self._info_threshold:
-            score = self._info_threshold
 
         # Cap at 1.0
         score = min(score, 1.0)

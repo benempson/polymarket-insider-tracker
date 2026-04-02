@@ -15,9 +15,9 @@ from polymarket_insider_tracker.ingestor.models import MarketMetadata, TradeEven
 logger = logging.getLogger(__name__)
 
 # Default configuration
-DEFAULT_VOLUME_THRESHOLD = 0.02  # 2% of daily volume
-DEFAULT_BOOK_THRESHOLD = 0.05  # 5% of order book depth
-DEFAULT_NICHE_VOLUME_THRESHOLD = Decimal("50000")  # $50k daily volume
+DEFAULT_VOLUME_THRESHOLD = 0.05  # 5% of daily volume
+DEFAULT_BOOK_THRESHOLD = 0.10  # 10% of order book depth
+DEFAULT_NICHE_VOLUME_THRESHOLD = Decimal("100000")  # $100k daily volume
 
 # Niche market categories - markets in these categories with low specificity
 # are more likely to have insider information value

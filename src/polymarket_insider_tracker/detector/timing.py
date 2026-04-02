@@ -13,7 +13,7 @@ from polymarket_insider_tracker.ingestor.models import TradeEvent
 logger = logging.getLogger(__name__)
 
 DEFAULT_CRITICAL_HOURS = 24.0
-DEFAULT_MIN_TRADE_SIZE = Decimal("500")
+DEFAULT_MIN_TRADE_SIZE = Decimal("2000")
 DEFAULT_MIN_DIRECTIONALITY = Decimal("0.30")  # price distance from 0.50
 
 

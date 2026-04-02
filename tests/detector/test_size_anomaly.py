@@ -422,9 +422,9 @@ class TestConfidenceScoring:
         """Test confidence with only volume impact."""
         detector = SizeAnomalyDetector(mock_metadata_sync)
 
-        # Volume impact 3x threshold = max score 0.5
+        # Volume impact 3x threshold (0.05) = max score 0.5
         confidence, factors = detector.calculate_confidence(
-            volume_impact=0.06,  # 3x the 0.02 threshold
+            volume_impact=0.15,  # 3x the 0.05 threshold
             book_impact=0.0,
             is_niche=False,
         )
@@ -437,10 +437,10 @@ class TestConfidenceScoring:
         """Test confidence with only book impact."""
         detector = SizeAnomalyDetector(mock_metadata_sync)
 
-        # Book impact 3x threshold = max score 0.3
+        # Book impact 3x threshold (0.10) = max score 0.3
         confidence, factors = detector.calculate_confidence(
             volume_impact=0.0,
-            book_impact=0.15,  # 3x the 0.05 threshold
+            book_impact=0.30,  # 3x the 0.10 threshold
             is_niche=False,
         )
 
@@ -454,8 +454,8 @@ class TestConfidenceScoring:
 
         # Both at 3x threshold = 0.5 + 0.3 = 0.8
         confidence, factors = detector.calculate_confidence(
-            volume_impact=0.06,
-            book_impact=0.15,
+            volume_impact=0.15,  # 3x the 0.05 threshold
+            book_impact=0.30,  # 3x the 0.10 threshold
             is_niche=False,
         )
 
@@ -469,7 +469,7 @@ class TestConfidenceScoring:
 
         # Volume impact 2x threshold = 0.33, with 1.5x niche = 0.5
         confidence, factors = detector.calculate_confidence(
-            volume_impact=0.04,  # 2x threshold
+            volume_impact=0.10,  # 2x the 0.05 threshold
             book_impact=0.0,
             is_niche=True,
         )
@@ -484,8 +484,8 @@ class TestConfidenceScoring:
 
         # No threshold exceeded, but is niche
         confidence, factors = detector.calculate_confidence(
-            volume_impact=0.01,  # Below 0.02 threshold
-            book_impact=0.01,  # Below 0.05 threshold
+            volume_impact=0.02,  # Below 0.05 threshold
+            book_impact=0.02,  # Below 0.10 threshold
             is_niche=True,
         )
 
@@ -499,8 +499,8 @@ class TestConfidenceScoring:
 
         # High impacts with niche multiplier would exceed 1.0
         confidence, factors = detector.calculate_confidence(
-            volume_impact=0.10,  # 5x threshold (capped at 3x)
-            book_impact=0.20,  # 4x threshold (capped at 3x)
+            volume_impact=0.20,  # 4x threshold (capped at 3x)
+            book_impact=0.40,  # 4x threshold (capped at 3x)
             is_niche=True,  # 1.5x multiplier
         )
 
@@ -511,8 +511,8 @@ class TestConfidenceScoring:
         detector = SizeAnomalyDetector(mock_metadata_sync)
 
         confidence, factors = detector.calculate_confidence(
-            volume_impact=0.01,  # Below threshold
-            book_impact=0.01,  # Below threshold
+            volume_impact=0.02,  # Below 0.05 threshold
+            book_impact=0.02,  # Below 0.10 threshold
             is_niche=False,
         )
 

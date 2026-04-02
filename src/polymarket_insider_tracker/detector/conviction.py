@@ -10,7 +10,7 @@ from polymarket_insider_tracker.ingestor.models import TradeEvent
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MIN_TRADE_SIZE = Decimal("500")
+DEFAULT_MIN_TRADE_SIZE = Decimal("2000")
 DEFAULT_EXTREME_LOW = Decimal("0.20")
 DEFAULT_EXTREME_HIGH = Decimal("0.80")
 
