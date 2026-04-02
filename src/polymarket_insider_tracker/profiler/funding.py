@@ -222,33 +222,19 @@ class FundingTracer:
         # Pad address to 32 bytes for topic filter
         padded_to = "0x" + to_address.lower().replace("0x", "").zfill(64)
 
-        await self.polygon_client._rate_limiter.acquire()
+        filter_params = {
+            "address": AsyncWeb3.to_checksum_address(token_address),
+            "topics": [
+                TRANSFER_EVENT_SIGNATURE.hex(),  # Transfer event
+                None,  # from (any)
+                padded_to,  # to (target address)
+            ],
+            "fromBlock": from_block,
+            "toBlock": to_block,
+        }
 
-        # Use the web3 instance from polygon client
-        w3 = (
-            self.polygon_client._w3
-            if self.polygon_client._primary_healthy
-            else (self.polygon_client._w3_fallback or self.polygon_client._w3)
-        )
-
-        # Get logs with Transfer event filtering by recipient
-        # Note: web3 typing is overly restrictive for block params
-        logs = await w3.eth.get_logs(
-            {
-                "address": AsyncWeb3.to_checksum_address(token_address),
-                "topics": [
-                    TRANSFER_EVENT_SIGNATURE.hex(),  # Transfer event
-                    None,  # from (any)
-                    padded_to,  # to (target address)
-                ],
-                "fromBlock": from_block,  # type: ignore[typeddict-item]
-                "toBlock": to_block,  # type: ignore[typeddict-item]
-            }
-        )
-
-        # Convert to list of dicts and limit
-        result = [dict(log) for log in logs[:limit]]
-        return result
+        logs = await self.polygon_client.get_logs(filter_params)
+        return logs[:limit]
 
     async def _log_to_funding_transfer(
         self,
@@ -258,18 +244,24 @@ class FundingTracer:
         """Convert a log entry to a FundingTransfer.
 
         Args:
-            log: Log dictionary from get_logs.
+            log: Log dictionary from get_logs (serialized hex strings).
             token_address: Token contract address.
 
         Returns:
             FundingTransfer object.
         """
         # Extract addresses from topics (padded to 32 bytes)
-        from_address = "0x" + log["topics"][1].hex()[-40:]
-        to_address = "0x" + log["topics"][2].hex()[-40:]
+        # Topics are hex strings (from serialization in get_logs)
+        topic1 = log["topics"][1] if isinstance(log["topics"][1], str) else log["topics"][1].hex()
+        topic2 = log["topics"][2] if isinstance(log["topics"][2], str) else log["topics"][2].hex()
+        from_address = "0x" + topic1[-40:]
+        to_address = "0x" + topic2[-40:]
 
         # Extract amount from data
-        amount = int(log["data"].hex(), 16)
+        data = log["data"] if isinstance(log["data"], str) else log["data"].hex()
+        # Remove 0x prefix if present for int parsing
+        data_hex = data[2:] if data.startswith("0x") else data
+        amount = int(data_hex, 16)
 
         # Get block timestamp
         block_number = log["blockNumber"]
@@ -282,12 +274,16 @@ class FundingTracer:
         # Determine token symbol
         token = "USDC" if token_address.lower() in self._usdc_addresses else "OTHER"
 
+        tx_hash = log["transactionHash"]
+        if hasattr(tx_hash, "hex"):
+            tx_hash = tx_hash.hex()
+
         return FundingTransfer(
             from_address=from_address.lower(),
             to_address=to_address.lower(),
             amount=Decimal(amount),
             token=token,
-            tx_hash=log["transactionHash"].hex(),
+            tx_hash=tx_hash,
             block_number=block_number,
             timestamp=timestamp,
         )

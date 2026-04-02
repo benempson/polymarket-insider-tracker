@@ -102,6 +102,7 @@ class TestValidateConfig:
     def test_validate_config_success(self, monkeypatch):
         """Should return settings on valid config."""
         monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("POLYGON_RPC_URL_DEFAULT", "https://polygon-rpc.com")
 
         settings = validate_config()
         assert settings is not None
@@ -124,6 +125,7 @@ class TestRunConfigCheck:
     def test_config_check_prints_summary(self, monkeypatch, capsys):
         """Config check should print configuration summary."""
         monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("POLYGON_RPC_URL_DEFAULT", "https://polygon-rpc.com")
 
         settings = validate_config()
         assert settings is not None
@@ -142,6 +144,7 @@ class TestMain:
     def test_main_with_config_check(self, monkeypatch):
         """Main should exit successfully with --config-check."""
         monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("POLYGON_RPC_URL_DEFAULT", "https://polygon-rpc.com")
 
         with pytest.raises(SystemExit) as exc_info:
             main(["--config-check"])
@@ -160,6 +163,7 @@ class TestMain:
     def test_main_with_dry_run_and_config_check(self, monkeypatch):
         """Main should handle dry-run with config-check."""
         monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("POLYGON_RPC_URL_DEFAULT", "https://polygon-rpc.com")
 
         with pytest.raises(SystemExit) as exc_info:
             main(["--config-check", "--dry-run"])
@@ -171,6 +175,7 @@ class TestMain:
     def test_main_runs_pipeline(self, mock_asyncio_run, _mock_run_pipeline, monkeypatch):
         """Main should run pipeline when not in config-check mode."""
         monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("POLYGON_RPC_URL_DEFAULT", "https://polygon-rpc.com")
         mock_asyncio_run.return_value = EXIT_SUCCESS
 
         with pytest.raises(SystemExit) as exc_info:

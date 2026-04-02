@@ -29,12 +29,8 @@ BINANCE_HOT_WALLET = "0x28c6c06298d514db089934071355e5743bf21d60"
 def mock_polygon_client() -> MagicMock:
     """Create a mock PolygonClient."""
     client = MagicMock()
-    client._rate_limiter = MagicMock()
-    client._rate_limiter.acquire = AsyncMock()
-    client._primary_healthy = True
-    client._w3 = MagicMock()
-    client._w3_fallback = None
     client.get_block = AsyncMock(return_value={"timestamp": 1704067200})
+    client.get_logs = AsyncMock(return_value=[])
     return client
 
 
@@ -314,23 +310,21 @@ class TestGetTransferLogs:
     """Tests for _get_transfer_logs method."""
 
     @pytest.mark.asyncio
-    async def test_get_transfer_logs_formats_topics_correctly(
+    async def test_get_transfer_logs_calls_polygon_client(
         self,
         funding_tracer: FundingTracer,
         mock_polygon_client: MagicMock,
     ) -> None:
-        """Test that transfer logs query is formatted correctly."""
-        mock_w3 = MagicMock()
-        mock_w3.eth.get_logs = AsyncMock(return_value=[])
-        mock_polygon_client._w3 = mock_w3
+        """Test that transfer logs are fetched via polygon_client.get_logs."""
+        mock_polygon_client.get_logs = AsyncMock(return_value=[])
 
         await funding_tracer._get_transfer_logs(
             to_address=TEST_WALLET,
             token_address=USDC_BRIDGED,
         )
 
-        mock_w3.eth.get_logs.assert_called_once()
-        call_args = mock_w3.eth.get_logs.call_args[0][0]
+        mock_polygon_client.get_logs.assert_called_once()
+        call_args = mock_polygon_client.get_logs.call_args[0][0]
 
         # Verify topics structure
         assert len(call_args["topics"]) == 3
@@ -346,10 +340,8 @@ class TestGetTransferLogs:
         mock_polygon_client: MagicMock,
     ) -> None:
         """Test that limit parameter works correctly."""
-        mock_logs = [MagicMock() for _ in range(10)]
-        mock_w3 = MagicMock()
-        mock_w3.eth.get_logs = AsyncMock(return_value=mock_logs)
-        mock_polygon_client._w3 = mock_w3
+        mock_logs = [{"blockNumber": i} for i in range(10)]
+        mock_polygon_client.get_logs = AsyncMock(return_value=mock_logs)
 
         result = await funding_tracer._get_transfer_logs(
             to_address=TEST_WALLET,
@@ -358,25 +350,6 @@ class TestGetTransferLogs:
         )
 
         assert len(result) == 3
-
-    @pytest.mark.asyncio
-    async def test_get_transfer_logs_uses_fallback_when_primary_unhealthy(
-        self,
-        funding_tracer: FundingTracer,
-        mock_polygon_client: MagicMock,
-    ) -> None:
-        """Test fallback RPC is used when primary is unhealthy."""
-        mock_polygon_client._primary_healthy = False
-        mock_fallback = MagicMock()
-        mock_fallback.eth.get_logs = AsyncMock(return_value=[])
-        mock_polygon_client._w3_fallback = mock_fallback
-
-        await funding_tracer._get_transfer_logs(
-            to_address=TEST_WALLET,
-            token_address=USDC_BRIDGED,
-        )
-
-        mock_fallback.eth.get_logs.assert_called_once()
 
 
 class TestLogToFundingTransfer:

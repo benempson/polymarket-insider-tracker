@@ -8,10 +8,16 @@ import pytest
 from web3.exceptions import Web3Exception
 
 from polymarket_insider_tracker.profiler.chain import (
+    BLOCK_CACHE_TTL,
     DEFAULT_CACHE_TTL_SECONDS,
     PolygonClient,
     RateLimiter,
     RPCError,
+)
+from polymarket_insider_tracker.profiler.rpc_provider import (
+    RPCProvider,
+    RPCProviderPool,
+    _is_daily_limit_error,
 )
 
 # Valid Ethereum addresses for testing
@@ -68,6 +74,116 @@ class TestRateLimiter:
         assert elapsed >= 0.1
 
 
+class TestRPCProviderPool:
+    """Tests for the RPCProviderPool class."""
+
+    def test_init(self) -> None:
+        """Test pool initialization."""
+        pool = RPCProviderPool([("infura", "https://infura.io"), ("alchemy", "https://alchemy.com")])
+
+        status = pool.get_status()
+        assert len(status) == 2
+        assert status[0]["name"] == "infura"
+        assert status[1]["name"] == "alchemy"
+
+    def test_init_empty_raises(self) -> None:
+        """Test that empty provider list raises."""
+        with pytest.raises(ValueError, match="At least one"):
+            RPCProviderPool([])
+
+    def test_get_ordered_providers_round_robin(self) -> None:
+        """Test that providers rotate on successive calls."""
+        pool = RPCProviderPool([("a", "https://a.com"), ("b", "https://b.com")])
+
+        first = pool.get_ordered_providers()
+        second = pool.get_ordered_providers()
+
+        # First call starts at index 0, second at index 1
+        assert first[0].name == "a"
+        assert second[0].name == "b"
+
+    def test_mark_unhealthy_skips_provider(self) -> None:
+        """Test that unhealthy providers are placed last."""
+        pool = RPCProviderPool(
+            [("a", "https://a.com"), ("b", "https://b.com")],
+            recovery_seconds=9999,  # Long recovery so it stays unhealthy
+        )
+
+        providers = pool.get_ordered_providers()
+        pool.mark_unhealthy(providers[0])  # Mark "a" unhealthy
+
+        ordered = pool.get_ordered_providers()
+        # "b" should be first since "a" is unhealthy
+        assert ordered[0].name == "b"
+
+    def test_mark_daily_limited(self) -> None:
+        """Test that daily-limited providers are excluded."""
+        pool = RPCProviderPool([("a", "https://a.com"), ("b", "https://b.com")])
+
+        providers = pool.get_ordered_providers()
+        pool.mark_daily_limited(providers[0])
+
+        status = pool.get_status()
+        limited = [s for s in status if s["daily_limit_hit"]]
+        assert len(limited) == 1
+        assert limited[0]["name"] == "a"
+
+    def test_mark_healthy_resets(self) -> None:
+        """Test that marking healthy resets failure state."""
+        pool = RPCProviderPool([("a", "https://a.com")])
+
+        provider = pool.get_ordered_providers()[0]
+        pool.mark_unhealthy(provider)
+        assert not provider.healthy
+
+        pool.mark_healthy(provider)
+        assert provider.healthy
+        assert provider.consecutive_failures == 0
+        assert provider.requests_processed == 1
+
+    def test_requests_processed_counter(self) -> None:
+        """Test that requests_processed increments on mark_healthy."""
+        pool = RPCProviderPool([("a", "https://a.com")])
+
+        provider = pool.get_ordered_providers()[0]
+        for _ in range(5):
+            pool.mark_healthy(provider)
+
+        assert provider.requests_processed == 5
+
+    def test_get_status(self) -> None:
+        """Test status output format."""
+        pool = RPCProviderPool([("infura", "https://infura.io")])
+
+        status = pool.get_status()
+        assert len(status) == 1
+        s = status[0]
+        assert s["name"] == "infura"
+        assert s["healthy"] is True
+        assert s["daily_limit_hit"] is False
+        assert s["consecutive_failures"] == 0
+        assert s["requests_processed"] == 0
+
+
+class TestDailyLimitDetection:
+    """Tests for daily limit error detection."""
+
+    def test_detects_infura_pattern(self) -> None:
+        assert _is_daily_limit_error(Exception("daily request count exceeded"))
+
+    def test_detects_alchemy_pattern(self) -> None:
+        assert _is_daily_limit_error(Exception("Your app has exceeded its compute units"))
+
+    def test_detects_generic_rate_limit(self) -> None:
+        assert _is_daily_limit_error(Exception("Too Many Requests"))
+
+    def test_ignores_regular_errors(self) -> None:
+        assert not _is_daily_limit_error(Exception("Connection refused"))
+
+    def test_case_insensitive(self) -> None:
+        assert _is_daily_limit_error(Exception("DAILY REQUEST COUNT EXCEEDED"))
+
+
 class TestPolygonClient:
     """Tests for the PolygonClient class."""
 
@@ -79,47 +195,33 @@ class TestPolygonClient:
         redis.set = AsyncMock()
         return redis
 
-    @pytest.fixture
-    def mock_w3(self) -> MagicMock:
-        """Create a mock Web3 instance."""
-        w3 = MagicMock()
-        w3.eth = MagicMock()
-        w3.eth.get_transaction_count = AsyncMock(return_value=42)
-        w3.eth.get_balance = AsyncMock(return_value=1000000000000000000)
-        w3.eth.get_block = AsyncMock(return_value={"timestamp": 1704369600})
-        w3.eth.block_number = AsyncMock(return_value=50000000)
-        return w3
-
-    def test_init(self) -> None:
-        """Test initialization."""
+    def test_init_with_rpc_url(self) -> None:
+        """Test initialization with legacy rpc_url."""
         client = PolygonClient("https://polygon-rpc.com")
-
-        assert client._rpc_url == "https://polygon-rpc.com"
-        assert client._fallback_rpc_url is None
         assert client._cache_ttl == DEFAULT_CACHE_TTL_SECONDS
 
+    def test_init_with_providers(self) -> None:
+        """Test initialization with provider list."""
+        client = PolygonClient(
+            providers=[("infura", "https://infura.io"), ("alchemy", "https://alchemy.com")],
+        )
+        status = client.get_provider_status()
+        assert len(status) == 2
+        assert status[0]["name"] == "infura"
+
     def test_init_with_fallback(self) -> None:
-        """Test initialization with fallback RPC."""
+        """Test initialization with legacy fallback."""
         client = PolygonClient(
             "https://polygon-rpc.com",
             fallback_rpc_url="https://fallback.com",
         )
+        status = client.get_provider_status()
+        assert len(status) == 2
 
-        assert client._fallback_rpc_url == "https://fallback.com"
-        assert client._w3_fallback is not None
-
-    def test_init_custom_config(self) -> None:
-        """Test initialization with custom config."""
-        client = PolygonClient(
-            "https://polygon-rpc.com",
-            cache_ttl_seconds=600,
-            max_requests_per_second=50,
-            max_retries=5,
-        )
-
-        assert client._cache_ttl == 600
-        assert client._max_retries == 5
-        assert client._rate_limiter.max_tokens == 50
+    def test_init_no_url_raises(self) -> None:
+        """Test that no URL raises."""
+        with pytest.raises(ValueError):
+            PolygonClient()
 
     def test_cache_key(self) -> None:
         """Test cache key generation."""
@@ -307,6 +409,20 @@ class TestPolygonClient:
 
             assert healthy is False
 
+    @pytest.mark.asyncio
+    async def test_get_provider_status(self) -> None:
+        """Test get_provider_status returns correct format."""
+        client = PolygonClient(
+            providers=[("infura", "https://infura.io"), ("alchemy", "https://alchemy.com")],
+        )
+
+        status = client.get_provider_status()
+
+        assert len(status) == 2
+        assert status[0]["name"] == "infura"
+        assert status[0]["healthy"] is True
+        assert status[0]["requests_processed"] == 0
+
 
 class TestPolygonClientRetryLogic:
     """Tests for retry and failover logic."""
@@ -338,7 +454,9 @@ class TestPolygonClientRetryLogic:
                 raise Web3Exception("Temporary error")
             return 42
 
-        client._w3.eth.get_transaction_count = mock_get_tx_count
+        # Patch the provider's w3 instance
+        provider = client._provider_pool._providers[0]
+        provider.w3.eth.get_transaction_count = mock_get_tx_count
 
         count = await client.get_transaction_count(VALID_ADDRESS)
 
@@ -346,29 +464,29 @@ class TestPolygonClientRetryLogic:
         assert call_count == 3
 
     @pytest.mark.asyncio
-    async def test_failover_to_secondary(self, mock_redis: AsyncMock) -> None:
-        """Test failover to secondary RPC."""
+    async def test_failover_to_next_provider(self, mock_redis: AsyncMock) -> None:
+        """Test failover to next provider in pool."""
         client = PolygonClient(
-            "https://polygon-rpc.com",
-            fallback_rpc_url="https://fallback.com",
+            providers=[("primary", "https://primary.com"), ("backup", "https://backup.com")],
             redis=mock_redis,
             max_retries=1,
             retry_delay_seconds=0.01,
         )
 
+        primary = client._provider_pool._providers[0]
+        backup = client._provider_pool._providers[1]
+
         # Primary always fails
         async def primary_fail(*_args: object, **_kwargs: object) -> int:
             raise Web3Exception("Primary down")
 
-        client._w3.eth.get_transaction_count = primary_fail
-
-        # Fallback works
-        client._w3_fallback.eth.get_transaction_count = AsyncMock(return_value=42)
+        primary.w3.eth.get_transaction_count = primary_fail
+        backup.w3.eth.get_transaction_count = AsyncMock(return_value=42)
 
         count = await client.get_transaction_count(VALID_ADDRESS)
 
         assert count == 42
-        assert not client._primary_healthy
+        assert not primary.healthy
 
     @pytest.mark.asyncio
     async def test_all_retries_exhausted(self, mock_redis: AsyncMock) -> None:
@@ -380,43 +498,39 @@ class TestPolygonClientRetryLogic:
             retry_delay_seconds=0.01,
         )
 
+        provider = client._provider_pool._providers[0]
+
         async def always_fail(*_args: object, **_kwargs: object) -> int:
             raise Web3Exception("Always fails")
 
-        client._w3.eth.get_transaction_count = always_fail
+        provider.w3.eth.get_transaction_count = always_fail
 
         with pytest.raises(RPCError):
             await client.get_transaction_count(VALID_ADDRESS)
 
-
-class TestPolygonClientRateLimiting:
-    """Tests for rate limiting."""
-
     @pytest.mark.asyncio
-    async def test_rate_limiting_enforced(self) -> None:
-        """Test that rate limiting delays requests."""
-        redis = AsyncMock()
-        redis.get = AsyncMock(return_value=None)
-        redis.set = AsyncMock()
-
+    async def test_daily_limit_moves_to_next_provider(self, mock_redis: AsyncMock) -> None:
+        """Test that daily limit error triggers provider switch."""
         client = PolygonClient(
-            "https://polygon-rpc.com",
-            redis=redis,
-            max_requests_per_second=5.0,
+            providers=[("infura", "https://infura.io"), ("alchemy", "https://alchemy.com")],
+            redis=mock_redis,
+            max_retries=1,
+            retry_delay_seconds=0.01,
         )
 
-        # Deplete rate limit
-        client._rate_limiter.tokens = 0
+        infura = client._provider_pool._providers[0]
+        alchemy = client._provider_pool._providers[1]
 
-        with patch.object(client._w3.eth, "get_transaction_count", new_callable=AsyncMock) as mock:
-            mock.return_value = 42
+        async def daily_limit_fail(*_args: object, **_kwargs: object) -> int:
+            raise Web3Exception("daily request count exceeded")
 
-            start = asyncio.get_event_loop().time()
-            await client.get_transaction_count(VALID_ADDRESS)
-            elapsed = asyncio.get_event_loop().time() - start
+        infura.w3.eth.get_transaction_count = daily_limit_fail
+        alchemy.w3.eth.get_transaction_count = AsyncMock(return_value=42)
 
-            # Should have waited for token refill
-            assert elapsed >= 0.1
+        count = await client.get_transaction_count(VALID_ADDRESS)
+
+        assert count == 42
+        assert infura.daily_limit_hit
 
 
 class TestPolygonClientTokenBalance:
@@ -445,15 +559,15 @@ class TestPolygonClientTokenBalance:
         """Test getting token balance from blockchain."""
         client = PolygonClient("https://polygon-rpc.com", redis=mock_redis)
 
-        # Mock the contract call
-        mock_contract = MagicMock()
-        mock_contract.functions.balanceOf.return_value.call = AsyncMock(return_value=5000000)
-        client._w3.eth.contract = MagicMock(return_value=mock_contract)
+        with patch.object(
+            client, "_execute_contract_call", new_callable=AsyncMock
+        ) as mock_call:
+            mock_call.return_value = 5000000
 
-        balance = await client.get_token_balance(VALID_ADDRESS, VALID_TOKEN)
+            balance = await client.get_token_balance(VALID_ADDRESS, VALID_TOKEN)
 
-        assert balance == Decimal("5000000")
-        mock_redis.set.assert_called_once()
+            assert balance == Decimal("5000000")
+            mock_redis.set.assert_called_once()
 
 
 class TestPolygonClientBlock:
@@ -488,7 +602,47 @@ class TestPolygonClientBlock:
             block = await client.get_block(50000000)
 
             assert block["timestamp"] == 1704369600
-            # Block cache uses 1 hour TTL
+            # Block cache uses 24h TTL
             mock_redis.set.assert_called_once()
             call_args = mock_redis.set.call_args
-            assert call_args[1]["ex"] == 3600
+            assert call_args[1]["ex"] == BLOCK_CACHE_TTL
+
+
+class TestPolygonClientGetLogs:
+    """Tests for the get_logs method."""
+
+    @pytest.fixture
+    def mock_redis(self) -> AsyncMock:
+        """Create a mock Redis client."""
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.set = AsyncMock()
+        return redis
+
+    @pytest.mark.asyncio
+    async def test_get_logs_cached(self, mock_redis: AsyncMock) -> None:
+        """Test getting logs from cache."""
+        mock_redis.get = AsyncMock(return_value=b'[{"blockNumber": 100}]')
+        client = PolygonClient("https://polygon-rpc.com", redis=mock_redis)
+
+        logs = await client.get_logs({"address": "0x123", "fromBlock": 0, "toBlock": 100})
+
+        assert len(logs) == 1
+        assert logs[0]["blockNumber"] == 100
+
+    @pytest.mark.asyncio
+    async def test_get_logs_uncached(self, mock_redis: AsyncMock) -> None:
+        """Test getting logs from blockchain."""
+        client = PolygonClient("https://polygon-rpc.com", redis=mock_redis)
+
+        provider = client._provider_pool._providers[0]
+        mock_log = MagicMock()
+        mock_log.__iter__ = MagicMock(return_value=iter([("blockNumber", 100)]))
+        mock_log.keys = MagicMock(return_value=["blockNumber"])
+        mock_log.__getitem__ = MagicMock(side_effect=lambda k: 100 if k == "blockNumber" else None)
+        provider.w3.eth.get_logs = AsyncMock(return_value=[])
+
+        logs = await client.get_logs({"address": "0x123", "fromBlock": 0, "toBlock": 100})
+
+        assert logs == []
+        provider.w3.eth.get_logs.assert_called_once()

@@ -250,8 +250,7 @@ class Pipeline:
         # Initialize Polygon client
         logger.debug("Initializing Polygon client...")
         self._polygon_client = PolygonClient(
-            settings.polygon.rpc_url,
-            fallback_rpc_url=settings.polygon.fallback_rpc_url,
+            providers=settings.polygon.all_rpc_urls,
             redis=self._redis,
         )
 
@@ -310,7 +309,7 @@ class Pipeline:
     def _get_health_stats(self) -> dict[str, Any]:
         """Return pipeline stats for the /health endpoint."""
         stats = self._stats
-        return {
+        result: dict[str, Any] = {
             "state": self._state.value,
             "trades_processed": stats.trades_processed,
             "signals_generated": stats.signals_generated,
@@ -319,6 +318,9 @@ class Pipeline:
             "last_trade_time": stats.last_trade_time.isoformat() if stats.last_trade_time else None,
             "last_error": stats.last_error,
         }
+        if self._polygon_client:
+            result["rpc_providers"] = self._polygon_client.get_provider_status()
+        return result
 
     async def _notify(self, msg: FormattedAlert) -> None:
         """Send a system notification to all configured channels."""

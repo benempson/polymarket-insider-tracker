@@ -8,10 +8,11 @@ environment variables at startup.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,30 +56,57 @@ class RedisSettings(BaseSettings):
 
 
 class PolygonSettings(BaseSettings):
-    """Polygon blockchain RPC settings."""
+    """Polygon blockchain RPC settings.
 
-    model_config = SettingsConfigDict(env_prefix="POLYGON_")
+    RPC providers are discovered dynamically from environment variables
+    matching the pattern POLYGON_RPC_URL_{PROVIDER_NAME}. For example:
+        POLYGON_RPC_URL_INFURA=https://polygon-mainnet.infura.io/v3/KEY
+        POLYGON_RPC_URL_ALCHEMY=https://polygon-mainnet.g.alchemy.com/v2/KEY
+        POLYGON_RPC_URL_PUBLICNODE=https://polygon-bor.publicnode.com
 
-    rpc_url: str = Field(
-        default="https://polygon-rpc.com",
-        alias="POLYGON_RPC_URL",
-        description="Primary Polygon RPC endpoint",
+    Provider names are derived from the suffix (lowercased).
+    """
+
+    model_config = SettingsConfigDict(env_prefix="POLYGON_", extra="ignore")
+
+    rpc_providers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Provider name -> RPC URL mapping (populated from POLYGON_RPC_URL_* env vars)",
     )
-    fallback_rpc_url: str | None = Field(
-        default=None,
-        alias="POLYGON_FALLBACK_RPC_URL",
-        description="Fallback Polygon RPC endpoint",
-    )
 
-    @field_validator("rpc_url", "fallback_rpc_url")
+    @model_validator(mode="before")
     @classmethod
-    def validate_url(cls, v: str | None) -> str | None:
-        """Validate RPC URL format."""
-        if v is None:
-            return v
-        if not v.startswith(("http://", "https://")):
-            raise ValueError("RPC URL must be an HTTP(S) endpoint")
-        return v
+    def discover_rpc_providers(cls, data: dict) -> dict:
+        """Scan environment for POLYGON_RPC_URL_* variables."""
+        providers: dict[str, str] = {}
+        prefix = "POLYGON_RPC_URL_"
+        for key, value in os.environ.items():
+            if key.startswith(prefix) and value:
+                provider_name = key[len(prefix) :].lower()
+                if not value.startswith(("http://", "https://")):
+                    raise ValueError(
+                        f"{key} must be an HTTP(S) endpoint, got: {value}"
+                    )
+                providers[provider_name] = value
+
+        if providers:
+            data["rpc_providers"] = providers
+        return data
+
+    @model_validator(mode="after")
+    def validate_has_providers(self) -> "PolygonSettings":
+        """Ensure at least one RPC provider is configured."""
+        if not self.rpc_providers:
+            raise ValueError(
+                "At least one POLYGON_RPC_URL_* environment variable must be set "
+                "(e.g. POLYGON_RPC_URL_INFURA=https://...)"
+            )
+        return self
+
+    @property
+    def all_rpc_urls(self) -> list[tuple[str, str]]:
+        """Return list of (provider_name, url) tuples."""
+        return list(self.rpc_providers.items())
 
 
 class PolymarketSettings(BaseSettings):
@@ -149,6 +177,66 @@ class TelegramSettings(BaseSettings):
         )
 
 
+class EmailSettings(BaseSettings):
+    """SMTP email notification settings for error alerts."""
+
+    model_config = SettingsConfigDict(env_prefix="EMAIL_", populate_by_name=True)
+
+    smtp_host: str | None = Field(
+        default=None,
+        alias="EMAIL_SMTP_HOST",
+        description="SMTP server hostname",
+    )
+    smtp_port: int = Field(
+        default=587,
+        alias="EMAIL_SMTP_PORT",
+        description="SMTP server port",
+    )
+    username: str | None = Field(
+        default=None,
+        alias="EMAIL_USERNAME",
+        description="SMTP authentication username",
+    )
+    password: SecretStr | None = Field(
+        default=None,
+        alias="EMAIL_PASSWORD",
+        description="SMTP authentication password",
+    )
+    from_address: str | None = Field(
+        default=None,
+        alias="EMAIL_FROM",
+        description="Sender email address",
+    )
+    to_addresses: str | None = Field(
+        default=None,
+        alias="EMAIL_TO",
+        description="Comma-separated list of recipient email addresses",
+    )
+    use_tls: bool = Field(
+        default=True,
+        alias="EMAIL_USE_TLS",
+        description="Use STARTTLS for SMTP connection",
+    )
+    cooldown_minutes: int = Field(
+        default=30,
+        alias="EMAIL_COOLDOWN_MINUTES",
+        description="Minimum minutes between emails for the same error",
+        ge=1,
+    )
+
+    @property
+    def enabled(self) -> bool:
+        """Check if email notifications are enabled."""
+        return bool(self.smtp_host and self.from_address and self.to_addresses)
+
+    @property
+    def recipients(self) -> list[str]:
+        """Parse comma-separated recipient addresses."""
+        if not self.to_addresses:
+            return []
+        return [addr.strip() for addr in self.to_addresses.split(",") if addr.strip()]
+
+
 class Settings(BaseSettings):
     """Main application settings.
 
@@ -178,6 +266,7 @@ class Settings(BaseSettings):
     polymarket: PolymarketSettings = Field(default_factory=PolymarketSettings)
     discord: DiscordSettings = Field(default_factory=DiscordSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    email: EmailSettings = Field(default_factory=EmailSettings)
 
     # Application settings
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
@@ -233,8 +322,7 @@ class Settings(BaseSettings):
             "database_url": self._redact_url(self.database.url),
             "redis_url": self._redact_url(self.redis.url),
             "polygon": {
-                "rpc_url": self.polygon.rpc_url,
-                "fallback_rpc_url": self.polygon.fallback_rpc_url or "(not set)",
+                "providers": list(self.polygon.rpc_providers.keys()),
             },
             "polymarket": {
                 "ws_url": self.polymarket.ws_url,
@@ -242,6 +330,7 @@ class Settings(BaseSettings):
             },
             "discord_enabled": str(self.discord.enabled),
             "telegram_enabled": str(self.telegram.enabled),
+            "email_enabled": str(self.email.enabled),
             "log_level": self.log_level,
             "health_port": str(self.health_port),
             "dry_run": str(self.dry_run),

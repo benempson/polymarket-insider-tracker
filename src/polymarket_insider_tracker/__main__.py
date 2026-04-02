@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from polymarket_insider_tracker import __version__
 from polymarket_insider_tracker.config import Settings, clear_settings_cache, get_settings
+from polymarket_insider_tracker.notifications.email_handler import SmtpErrorHandler, create_email_handler
 from polymarket_insider_tracker.pipeline import Pipeline
 from polymarket_insider_tracker.shutdown import GracefulShutdown
 
@@ -163,6 +164,7 @@ def print_config_summary(settings: Settings, dry_run: bool) -> None:
     print(f"  Dry Run: {dry_run}")
     print(f"  Discord: {'enabled' if summary['discord_enabled'] == 'True' else 'disabled'}")
     print(f"  Telegram: {'enabled' if summary['telegram_enabled'] == 'True' else 'disabled'}")
+    print(f"  Email Errors: {'enabled' if summary['email_enabled'] == 'True' else 'disabled'}")
     print()
 
 
@@ -213,15 +215,66 @@ def run_config_check(settings: Settings) -> int:
     else:
         print("  Telegram: not configured")
 
+    # Check Email
+    if settings.email.enabled:
+        print("  Email errors: configured")
+    else:
+        print("  Email errors: not configured")
+
     print()
     print("All checks passed. Ready to run.")
     return EXIT_SUCCESS
+
+
+def setup_email_handler(settings: Settings) -> SmtpErrorHandler | None:
+    """Set up the SMTP error email handler if configured.
+
+    Returns:
+        The handler instance if configured, None otherwise.
+    """
+    logger = logging.getLogger(__name__)
+    email = settings.email
+
+    if not email.enabled:
+        logger.info("Email error notifications disabled (SMTP not configured)")
+        return None
+
+    handler = create_email_handler(
+        smtp_host=email.smtp_host,  # type: ignore[arg-type]
+        smtp_port=email.smtp_port,
+        from_address=email.from_address,  # type: ignore[arg-type]
+        to_addresses=email.recipients,
+        username=email.username,
+        password=email.password.get_secret_value() if email.password else None,
+        use_tls=email.use_tls,
+        cooldown_seconds=email.cooldown_minutes * 60,
+    )
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d):\n\n"
+            "%(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logging.getLogger().addHandler(handler)
+    logger.info(
+        "Email error notifications enabled (to: %s)",
+        ", ".join(email.recipients),
+    )
+
+    if handler.send_test_email():
+        logger.info("Startup test email sent successfully")
+    else:
+        logger.warning("Startup test email failed — check SMTP settings")
+
+    return handler
 
 
 async def run_pipeline(
     settings: Settings,
     dry_run: bool,
     shutdown_timeout: float = 30.0,
+    email_handler: SmtpErrorHandler | None = None,
 ) -> int:
     """Run the main pipeline with graceful shutdown handling.
 
@@ -237,6 +290,9 @@ async def run_pipeline(
     shutdown = GracefulShutdown(timeout=shutdown_timeout)
 
     try:
+        if email_handler:
+            email_handler.set_event_loop(asyncio.get_running_loop())
+
         async with shutdown:
             pipeline = Pipeline(settings, dry_run=dry_run)
 
@@ -261,6 +317,9 @@ async def run_pipeline(
     except Exception as e:
         logger.exception("Pipeline failed: %s", e)
         return EXIT_ERROR
+    finally:
+        if email_handler:
+            logging.getLogger().removeHandler(email_handler)
 
 
 def main(argv: list[str] | None = None) -> NoReturn:
@@ -294,8 +353,11 @@ def main(argv: list[str] | None = None) -> NoReturn:
     # Print config summary
     print_config_summary(settings, dry_run)
 
+    # Set up email error handler
+    email_handler = setup_email_handler(settings)
+
     # Run pipeline
-    exit_code = asyncio.run(run_pipeline(settings, dry_run))
+    exit_code = asyncio.run(run_pipeline(settings, dry_run, email_handler=email_handler))
     sys.exit(exit_code)
 
 

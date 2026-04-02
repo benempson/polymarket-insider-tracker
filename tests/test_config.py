@@ -86,30 +86,47 @@ class TestRedisSettings:
 class TestPolygonSettings:
     """Tests for PolygonSettings."""
 
-    def test_default_rpc_url(self) -> None:
-        """Test default Polygon RPC URL."""
-        with patch.dict(os.environ, {}, clear=True):
-            settings = PolygonSettings()
-            assert settings.rpc_url == "https://polygon-rpc.com"
-            assert settings.fallback_rpc_url is None
-
-    def test_custom_urls(self) -> None:
-        """Test custom Polygon RPC URLs."""
+    def test_discovers_providers_from_env(self) -> None:
+        """Test dynamic POLYGON_RPC_URL_* discovery."""
         with patch.dict(
             os.environ,
             {
-                "POLYGON_RPC_URL": "https://alchemy.io/polygon",
-                "POLYGON_FALLBACK_RPC_URL": "https://backup.polygon.io",
+                "POLYGON_RPC_URL_INFURA": "https://infura.io/v3/key",
+                "POLYGON_RPC_URL_ALCHEMY": "https://alchemy.com/v2/key",
             },
+            clear=True,
         ):
             settings = PolygonSettings()
-            assert settings.rpc_url == "https://alchemy.io/polygon"
-            assert settings.fallback_rpc_url == "https://backup.polygon.io"
+            assert "infura" in settings.rpc_providers
+            assert "alchemy" in settings.rpc_providers
+            assert len(settings.all_rpc_urls) == 2
+
+    def test_provider_name_from_suffix(self) -> None:
+        """Test provider name is derived from env var suffix."""
+        with patch.dict(
+            os.environ,
+            {"POLYGON_RPC_URL_MYNODE": "https://mynode.com"},
+            clear=True,
+        ):
+            settings = PolygonSettings()
+            assert "mynode" in settings.rpc_providers
+
+    def test_no_providers_raises(self) -> None:
+        """Test that missing providers raises validation error."""
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(ValidationError, match="POLYGON_RPC_URL_"),
+        ):
+            PolygonSettings()
 
     def test_invalid_url_raises(self) -> None:
         """Test that invalid RPC URL raises validation error."""
         with (
-            patch.dict(os.environ, {"POLYGON_RPC_URL": "ws://polygon.io"}),
+            patch.dict(
+                os.environ,
+                {"POLYGON_RPC_URL_BAD": "ws://polygon.io"},
+                clear=True,
+            ),
             pytest.raises(ValidationError, match="HTTP"),
         ):
             PolygonSettings()
@@ -194,14 +211,17 @@ class TestTelegramSettings:
 class TestSettings:
     """Tests for main Settings class."""
 
+    # Base env vars needed for Settings to validate
+    _BASE_ENV = {
+        "DATABASE_URL": "postgresql://user:pass@localhost/db",
+        "POLYGON_RPC_URL_DEFAULT": "https://polygon-rpc.com",
+    }
+
     def test_loads_with_required_vars(self) -> None:
         """Test settings load with required environment variables."""
         with patch.dict(
             os.environ,
-            {
-                "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                "REDIS_URL": "redis://localhost:6379",
-            },
+            {**self._BASE_ENV, "REDIS_URL": "redis://localhost:6379"},
         ):
             settings = Settings()
             assert settings.database.url == "postgresql://user:pass@localhost/db"
@@ -209,35 +229,20 @@ class TestSettings:
 
     def test_default_log_level(self) -> None:
         """Test default log level is INFO."""
-        with patch.dict(
-            os.environ,
-            {"DATABASE_URL": "postgresql://user:pass@localhost/db"},
-        ):
+        with patch.dict(os.environ, self._BASE_ENV):
             settings = Settings()
             assert settings.log_level == "INFO"
 
     def test_custom_log_level(self) -> None:
         """Test custom log level."""
-        with patch.dict(
-            os.environ,
-            {
-                "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                "LOG_LEVEL": "DEBUG",
-            },
-        ):
+        with patch.dict(os.environ, {**self._BASE_ENV, "LOG_LEVEL": "DEBUG"}):
             settings = Settings()
             assert settings.log_level == "DEBUG"
 
     def test_invalid_log_level_raises(self) -> None:
         """Test invalid log level raises validation error."""
         with (
-            patch.dict(
-                os.environ,
-                {
-                    "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                    "LOG_LEVEL": "TRACE",
-                },
-            ),
+            patch.dict(os.environ, {**self._BASE_ENV, "LOG_LEVEL": "TRACE"}),
             pytest.raises(ValidationError),
         ):
             Settings()
@@ -245,13 +250,7 @@ class TestSettings:
     def test_health_port_validation(self) -> None:
         """Test health port must be valid port number."""
         with (
-            patch.dict(
-                os.environ,
-                {
-                    "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                    "HEALTH_PORT": "99999",
-                },
-            ),
+            patch.dict(os.environ, {**self._BASE_ENV, "HEALTH_PORT": "99999"}),
             pytest.raises(ValidationError, match="65535"),
         ):
             Settings()
@@ -260,13 +259,7 @@ class TestSettings:
         """Test get_logging_level returns numeric level."""
         import logging
 
-        with patch.dict(
-            os.environ,
-            {
-                "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                "LOG_LEVEL": "WARNING",
-            },
-        ):
+        with patch.dict(os.environ, {**self._BASE_ENV, "LOG_LEVEL": "WARNING"}):
             settings = Settings()
             assert settings.get_logging_level() == logging.WARNING
 
@@ -277,6 +270,7 @@ class TestSettings:
             {
                 "DATABASE_URL": "postgresql://user:secretpass@localhost/db",
                 "REDIS_URL": "redis://localhost:6379",
+                "POLYGON_RPC_URL_DEFAULT": "https://polygon-rpc.com",
             },
         ):
             settings = Settings()
@@ -293,37 +287,27 @@ class TestSettings:
 class TestGetSettings:
     """Tests for get_settings singleton."""
 
+    _BASE_ENV = {
+        "DATABASE_URL": "postgresql://user:pass@localhost/db",
+        "POLYGON_RPC_URL_DEFAULT": "https://polygon-rpc.com",
+    }
+
     def test_returns_same_instance(self) -> None:
         """Test get_settings returns cached instance."""
-        with patch.dict(
-            os.environ,
-            {"DATABASE_URL": "postgresql://user:pass@localhost/db"},
-        ):
+        with patch.dict(os.environ, self._BASE_ENV):
             settings1 = get_settings()
             settings2 = get_settings()
             assert settings1 is settings2
 
     def test_clear_cache_allows_reload(self) -> None:
         """Test clear_settings_cache allows reloading settings."""
-        with patch.dict(
-            os.environ,
-            {
-                "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                "LOG_LEVEL": "INFO",
-            },
-        ):
+        with patch.dict(os.environ, {**self._BASE_ENV, "LOG_LEVEL": "INFO"}):
             settings1 = get_settings()
             assert settings1.log_level == "INFO"
 
         clear_settings_cache()
 
-        with patch.dict(
-            os.environ,
-            {
-                "DATABASE_URL": "postgresql://user:pass@localhost/db",
-                "LOG_LEVEL": "DEBUG",
-            },
-        ):
+        with patch.dict(os.environ, {**self._BASE_ENV, "LOG_LEVEL": "DEBUG"}):
             settings2 = get_settings()
             assert settings2.log_level == "DEBUG"
             assert settings1 is not settings2

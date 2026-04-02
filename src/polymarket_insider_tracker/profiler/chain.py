@@ -1,14 +1,14 @@
 """Polygon blockchain client with connection pooling and caching.
 
 This module provides a Polygon client for wallet data queries with:
-- Connection pooling for concurrent requests
+- Multi-provider rotation for load distribution
 - Redis caching to avoid redundant RPC calls
 - Retry logic with exponential backoff
 - Rate limiting to respect provider limits
-- Failover to secondary RPC URL
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -21,7 +21,6 @@ from typing import Any, cast
 from redis.asyncio import Redis
 from web3 import AsyncWeb3
 from web3.exceptions import Web3Exception
-from web3.providers import AsyncHTTPProvider
 
 from polymarket_insider_tracker.profiler.models import Transaction, WalletInfo
 
@@ -34,6 +33,13 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY_SECONDS = 1.0
 DEFAULT_CONNECTION_POOL_SIZE = 10
 DEFAULT_REQUEST_TIMEOUT = 30
+
+# Extended TTLs for immutable data
+BLOCK_CACHE_TTL = 86400  # 24 hours — block data is immutable
+FIRST_TX_CACHE_TTL = 86400  # 24 hours — first tx never changes
+FIRST_TX_NULL_CACHE_TTL = 60  # 1 minute — wallet might get a tx soon
+LOGS_CACHE_TTL = 3600  # 1 hour — historical logs are immutable
+LOGS_LATEST_CACHE_TTL = 300  # 5 minutes — latest block range may change
 
 
 class PolygonClientError(Exception):
@@ -90,18 +96,16 @@ class PolygonClient:
     """Polygon blockchain client with caching and rate limiting.
 
     Provides efficient access to wallet data with:
-    - Connection pooling for concurrent requests
+    - Multi-provider rotation for load distribution
     - Redis caching with configurable TTL
     - Rate limiting to respect provider limits
     - Retry logic with exponential backoff
-    - Failover to secondary RPC
 
     Example:
         ```python
         redis = Redis.from_url("redis://localhost:6379")
         client = PolygonClient(
-            rpc_url="https://polygon-rpc.com",
-            fallback_rpc_url="https://polygon-bor.publicnode.com",
+            providers=[("infura", "https://..."), ("alchemy", "https://...")],
             redis=redis,
         )
 
@@ -115,8 +119,9 @@ class PolygonClient:
 
     def __init__(
         self,
-        rpc_url: str,
+        rpc_url: str = "",
         *,
+        providers: list[tuple[str, str]] | None = None,
         fallback_rpc_url: str | None = None,
         redis: Redis | None = None,
         cache_ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
@@ -127,34 +132,35 @@ class PolygonClient:
         """Initialize the Polygon client.
 
         Args:
-            rpc_url: Primary Polygon RPC endpoint URL.
-            fallback_rpc_url: Optional fallback RPC URL for failover.
+            rpc_url: Primary RPC URL (backward compat). Ignored if providers is set.
+            providers: List of (name, url) tuples for provider rotation.
+            fallback_rpc_url: Legacy fallback URL (backward compat).
             redis: Optional Redis client for caching.
-            cache_ttl_seconds: Cache TTL in seconds.
-            max_requests_per_second: Rate limit for RPC calls.
-            max_retries: Maximum retry attempts on failure.
+            cache_ttl_seconds: Default cache TTL in seconds.
+            max_requests_per_second: Rate limit per provider.
+            max_retries: Maximum retry attempts per provider.
             retry_delay_seconds: Initial delay between retries.
         """
-        self._rpc_url = rpc_url
-        self._fallback_rpc_url = fallback_rpc_url
+        from polymarket_insider_tracker.profiler.rpc_provider import RPCProviderPool
+
+        # Normalize to provider list
+        if providers:
+            provider_list = providers
+        elif rpc_url:
+            provider_list = [("default", rpc_url)]
+            if fallback_rpc_url:
+                provider_list.append(("fallback", fallback_rpc_url))
+        else:
+            raise ValueError("Either rpc_url or providers must be specified")
+
+        self._provider_pool = RPCProviderPool(
+            provider_list,
+            max_requests_per_second=max_requests_per_second,
+        )
         self._redis = redis
         self._cache_ttl = cache_ttl_seconds
         self._max_retries = max_retries
         self._retry_delay = retry_delay_seconds
-
-        # Create web3 instances
-        self._w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url))
-        self._w3_fallback: AsyncWeb3[AsyncHTTPProvider] | None = None
-        if fallback_rpc_url:
-            self._w3_fallback = AsyncWeb3(AsyncHTTPProvider(fallback_rpc_url))
-
-        # Rate limiter
-        self._rate_limiter = RateLimiter.create(max_requests_per_second)
-
-        # Track primary RPC health
-        self._primary_healthy = True
-        self._last_primary_check = 0.0
-        self._primary_recovery_interval = 60.0  # Try primary again after 60s
 
         # Cache key prefix
         self._cache_prefix = "polygon:"
@@ -185,24 +191,16 @@ class PolygonClient:
         except Exception as e:
             logger.warning("Cache set failed: %s", e)
 
-    def _should_try_primary(self) -> bool:
-        """Check if we should try the primary RPC."""
-        if self._primary_healthy:
-            return True
-        # Periodically retry primary
-        now = time.monotonic()
-        if now - self._last_primary_check > self._primary_recovery_interval:
-            self._last_primary_check = now
-            return True
-        return False
-
     async def _execute_with_retry(
         self,
         func_name: str,
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Execute an RPC call with retry and failover logic.
+        """Execute an RPC call with retry and provider rotation.
+
+        Tries each available provider with exponential backoff retries.
+        Marks providers as unhealthy or daily-limited as appropriate.
 
         Args:
             func_name: Name of the web3.eth method to call.
@@ -213,51 +211,33 @@ class PolygonClient:
             Result from the RPC call.
 
         Raises:
-            RPCError: If all retries and failover fail.
+            RPCError: If all providers and retries are exhausted.
         """
-        await self._rate_limiter.acquire()
+        from polymarket_insider_tracker.profiler.rpc_provider import _is_daily_limit_error
+
+        providers = self._provider_pool.get_ordered_providers()
+        if not providers:
+            raise RPCError("All RPC providers are unavailable")
 
         last_error: Exception | None = None
-        delay = self._retry_delay
 
-        # Try primary RPC
-        if self._should_try_primary():
-            for attempt in range(self._max_retries):
-                try:
-                    method = getattr(self._w3.eth, func_name)
-                    result = await method(*args, **kwargs)
-                    self._primary_healthy = True
-                    return result
-                except Web3Exception as e:
-                    last_error = e
-                    logger.warning(
-                        "Primary RPC %s failed (attempt %d/%d): %s",
-                        func_name,
-                        attempt + 1,
-                        self._max_retries,
-                        e,
-                    )
-                    if attempt < self._max_retries - 1:
-                        await asyncio.sleep(delay)
-                        delay *= 2  # Exponential backoff
-
-            # Mark primary as unhealthy
-            self._primary_healthy = False
-            self._last_primary_check = time.monotonic()
-
-        # Try fallback RPC
-        if self._w3_fallback:
+        for provider in providers:
             delay = self._retry_delay
             for attempt in range(self._max_retries):
+                await provider.rate_limiter.acquire()
                 try:
-                    method = getattr(self._w3_fallback.eth, func_name)
+                    method = getattr(provider.w3.eth, func_name)
                     result = await method(*args, **kwargs)
-                    logger.info("Fallback RPC succeeded for %s", func_name)
+                    self._provider_pool.mark_healthy(provider)
                     return result
                 except Web3Exception as e:
                     last_error = e
+                    if _is_daily_limit_error(e):
+                        self._provider_pool.mark_daily_limited(provider)
+                        break  # Move to next provider
                     logger.warning(
-                        "Fallback RPC %s failed (attempt %d/%d): %s",
+                        "Provider %s %s failed (attempt %d/%d): %s",
+                        provider.name,
                         func_name,
                         attempt + 1,
                         self._max_retries,
@@ -266,8 +246,59 @@ class PolygonClient:
                     if attempt < self._max_retries - 1:
                         await asyncio.sleep(delay)
                         delay *= 2
+            else:
+                # All retries exhausted for this provider
+                self._provider_pool.mark_unhealthy(provider)
 
-        raise RPCError(f"RPC call {func_name} failed after all retries: {last_error}")
+        raise RPCError(f"RPC call {func_name} failed on all providers: {last_error}")
+
+    async def _execute_contract_call(
+        self,
+        contract_address: str,
+        abi: list[dict],
+        method_name: str,
+        *args: Any,
+    ) -> Any:
+        """Execute a contract call with provider rotation.
+
+        Args:
+            contract_address: Contract address.
+            abi: Contract ABI.
+            method_name: Contract method name.
+            *args: Method arguments.
+
+        Returns:
+            Result from the contract call.
+
+        Raises:
+            RPCError: If all providers fail.
+        """
+        from polymarket_insider_tracker.profiler.rpc_provider import _is_daily_limit_error
+
+        providers = self._provider_pool.get_ordered_providers()
+        if not providers:
+            raise RPCError("All RPC providers are unavailable")
+
+        last_error: Exception | None = None
+
+        for provider in providers:
+            await provider.rate_limiter.acquire()
+            try:
+                contract = provider.w3.eth.contract(
+                    address=AsyncWeb3.to_checksum_address(contract_address),
+                    abi=abi,
+                )
+                result = await getattr(contract.functions, method_name)(*args).call()
+                self._provider_pool.mark_healthy(provider)
+                return result
+            except Web3Exception as e:
+                last_error = e
+                if _is_daily_limit_error(e):
+                    self._provider_pool.mark_daily_limited(provider)
+                else:
+                    self._provider_pool.mark_unhealthy(provider)
+
+        raise RPCError(f"Contract call {method_name} failed on all providers: {last_error}")
 
     async def get_transaction_count(self, address: str) -> int:
         """Get wallet transaction count (nonce).
@@ -396,19 +427,12 @@ class PolygonClient:
             }
         ]
 
-        await self._rate_limiter.acquire()
-
-        try:
-            w3 = self._w3 if self._primary_healthy else (self._w3_fallback or self._w3)
-            contract = w3.eth.contract(
-                address=AsyncWeb3.to_checksum_address(token_address),
-                abi=erc20_abi,
-            )
-            balance = await contract.functions.balanceOf(
-                AsyncWeb3.to_checksum_address(address)
-            ).call()
-        except Web3Exception as e:
-            raise RPCError(f"Failed to get token balance: {e}") from e
+        balance = await self._execute_contract_call(
+            token_address,
+            erc20_abi,
+            "balanceOf",
+            AsyncWeb3.to_checksum_address(address),
+        )
 
         # Cache result
         await self._set_cached(cache_key, str(balance))
@@ -438,7 +462,7 @@ class PolygonClient:
         block_dict["timestamp"] = int(block_dict["timestamp"])
 
         # Cache result (blocks are immutable, use longer TTL)
-        await self._set_cached(cache_key, json.dumps(block_dict), ttl=3600)
+        await self._set_cached(cache_key, json.dumps(block_dict), ttl=BLOCK_CACHE_TTL)
 
         return dict(block_dict)
 
@@ -476,7 +500,7 @@ class PolygonClient:
         # Check if wallet has any transactions
         nonce = await self.get_transaction_count(address)
         if nonce == 0:
-            await self._set_cached(cache_key, "null", ttl=60)  # Short TTL for empty
+            await self._set_cached(cache_key, "null", ttl=FIRST_TX_NULL_CACHE_TTL)
             return None
 
         # Note: Getting the actual first transaction requires using an indexer
@@ -512,6 +536,65 @@ class PolygonClient:
             first_transaction=first_tx,
         )
 
+    async def get_logs(self, filter_params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Get event logs with provider rotation and caching.
+
+        Args:
+            filter_params: Web3 filter parameters (address, topics, fromBlock, toBlock).
+
+        Returns:
+            List of log dictionaries.
+
+        Raises:
+            RPCError: If all providers fail.
+        """
+        from polymarket_insider_tracker.profiler.rpc_provider import _is_daily_limit_error
+
+        # Generate cache key from filter params
+        cache_key = self._logs_cache_key(filter_params)
+
+        cached = await self._get_cached(cache_key)
+        if cached is not None:
+            return cast(list[dict[str, Any]], json.loads(cached))
+
+        # Determine TTL based on whether toBlock is "latest"
+        to_block = filter_params.get("toBlock", "latest")
+        ttl = LOGS_LATEST_CACHE_TTL if to_block == "latest" else LOGS_CACHE_TTL
+
+        # Execute with provider rotation
+        providers = self._provider_pool.get_ordered_providers()
+        if not providers:
+            raise RPCError("All RPC providers are unavailable")
+
+        last_error: Exception | None = None
+        for provider in providers:
+            await provider.rate_limiter.acquire()
+            try:
+                logs = await provider.w3.eth.get_logs(filter_params)
+                result = [_serialize_log(log) for log in logs]
+                await self._set_cached(cache_key, json.dumps(result), ttl=ttl)
+                self._provider_pool.mark_healthy(provider)
+                return result
+            except Web3Exception as e:
+                last_error = e
+                if _is_daily_limit_error(e):
+                    self._provider_pool.mark_daily_limited(provider)
+                else:
+                    self._provider_pool.mark_unhealthy(provider)
+
+        raise RPCError(f"get_logs failed on all providers: {last_error}")
+
+    def _logs_cache_key(self, filter_params: dict[str, Any]) -> str:
+        """Generate a stable cache key for log filter params."""
+        # Serialize deterministically for hashing
+        serializable = json.dumps(filter_params, sort_keys=True, default=str)
+        digest = hashlib.sha256(serializable.encode()).hexdigest()[:16]
+        return f"{self._cache_prefix}logs:{digest}"
+
+    def get_provider_status(self) -> list[dict]:
+        """Return status of all RPC providers for the health endpoint."""
+        return self._provider_pool.get_status()
+
     async def health_check(self) -> bool:
         """Check if the client can connect to the RPC.
 
@@ -523,3 +606,17 @@ class PolygonClient:
             return True
         except RPCError:
             return False
+
+
+def _serialize_log(log: Any) -> dict[str, Any]:
+    """Convert a web3 log object to a JSON-serializable dict."""
+    d = dict(log)
+    # Convert HexBytes to hex strings
+    for key in ("transactionHash", "blockHash"):
+        if key in d and hasattr(d[key], "hex"):
+            d[key] = d[key].hex()
+    if "topics" in d:
+        d["topics"] = [t.hex() if hasattr(t, "hex") else str(t) for t in d["topics"]]
+    if "data" in d and hasattr(d["data"], "hex"):
+        d["data"] = d["data"].hex()
+    return d
