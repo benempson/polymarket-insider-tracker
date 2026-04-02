@@ -15,6 +15,7 @@ from polymarket_insider_tracker.ingestor.models import MarketMetadata, TradeEven
 logger = logging.getLogger(__name__)
 
 # Default configuration
+DEFAULT_MIN_TRADE_SIZE = Decimal("500")  # $500 minimum notional value
 DEFAULT_VOLUME_THRESHOLD = 0.05  # 5% of daily volume
 DEFAULT_BOOK_THRESHOLD = 0.10  # 10% of order book depth
 DEFAULT_NICHE_VOLUME_THRESHOLD = Decimal("100000")  # $100k daily volume
@@ -58,6 +59,7 @@ class SizeAnomalyDetector:
         metadata_sync: MarketMetadataSync,
         *,
         market_stats: MarketStatsAggregator | None = None,
+        min_trade_size: Decimal = DEFAULT_MIN_TRADE_SIZE,
         volume_threshold: float = DEFAULT_VOLUME_THRESHOLD,
         book_threshold: float = DEFAULT_BOOK_THRESHOLD,
         niche_volume_threshold: Decimal = DEFAULT_NICHE_VOLUME_THRESHOLD,
@@ -67,12 +69,14 @@ class SizeAnomalyDetector:
         Args:
             metadata_sync: MarketMetadataSync for fetching market metadata.
             market_stats: Optional rolling market stats from the trade stream.
-            volume_threshold: Threshold for volume impact (default 0.02 = 2%).
-            book_threshold: Threshold for book impact (default 0.05 = 5%).
-            niche_volume_threshold: Volume below which market is niche ($50k).
+            min_trade_size: Minimum notional trade size to consider ($500).
+            volume_threshold: Threshold for volume impact (default 0.05 = 5%).
+            book_threshold: Threshold for book impact (default 0.10 = 10%).
+            niche_volume_threshold: Volume below which market is niche ($100k).
         """
         self._metadata_sync = metadata_sync
         self._market_stats = market_stats
+        self._min_trade_size = min_trade_size
         self._volume_threshold = volume_threshold
         self._book_threshold = book_threshold
         self._niche_volume_threshold = niche_volume_threshold
@@ -103,6 +107,10 @@ class SizeAnomalyDetector:
             SizeAnomalySignal if the trade triggers anomaly detection,
             None otherwise.
         """
+        # Filter trades below minimum size
+        if trade.notional_value < self._min_trade_size:
+            return None
+
         # Get market metadata
         try:
             metadata = await self._metadata_sync.get_market(trade.market_id)

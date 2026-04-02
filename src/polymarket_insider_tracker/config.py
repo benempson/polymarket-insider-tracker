@@ -237,6 +237,65 @@ class EmailSettings(BaseSettings):
         return [addr.strip() for addr in self.to_addresses.split(",") if addr.strip()]
 
 
+class AlertFilterSettings(BaseSettings):
+    """Market filtering settings for alert suppression."""
+
+    model_config = SettingsConfigDict(env_prefix="ALERT_", populate_by_name=True)
+
+    include_categories: str | None = Field(
+        default=None,
+        alias="ALERT_INCLUDE_CATEGORIES",
+        description="Comma-separated list of market categories to alert on (e.g. politics,finance,tech,science)",
+    )
+    exclude_keywords: str | None = Field(
+        default=None,
+        alias="ALERT_EXCLUDE_KEYWORDS",
+        description="Comma-separated keywords — markets containing any are suppressed",
+    )
+
+    @property
+    def category_set(self) -> set[str]:
+        """Parse include_categories into a set."""
+        if not self.include_categories:
+            return set()
+        return {c.strip().lower() for c in self.include_categories.split(",") if c.strip()}
+
+    @property
+    def keyword_set(self) -> set[str]:
+        """Parse exclude_keywords into a lowercase set."""
+        if not self.exclude_keywords:
+            return set()
+        return {k.strip().lower() for k in self.exclude_keywords.split(",") if k.strip()}
+
+    @property
+    def enabled(self) -> bool:
+        """Check if any filtering is configured."""
+        return bool(self.category_set or self.keyword_set)
+
+    def should_alert(self, category: str, market_title: str) -> bool:
+        """Check if a market passes the filter.
+
+        Args:
+            category: Market category (e.g. "crypto", "politics").
+            market_title: Market title/question text.
+
+        Returns:
+            True if the market should generate alerts.
+        """
+        # Category include filter
+        cats = self.category_set
+        if cats and category.lower() not in cats:
+            return False
+
+        # Keyword exclude filter
+        title_lower = market_title.lower()
+        for keyword in self.keyword_set:
+            if keyword in title_lower:
+                return False
+
+        return True
+
+
 class Settings(BaseSettings):
     """Main application settings.
 
@@ -267,6 +326,7 @@ class Settings(BaseSettings):
     discord: DiscordSettings = Field(default_factory=DiscordSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     email: EmailSettings = Field(default_factory=EmailSettings)
+    alert_filter: AlertFilterSettings = Field(default_factory=AlertFilterSettings)
 
     # Application settings
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(

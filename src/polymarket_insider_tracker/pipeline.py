@@ -665,6 +665,21 @@ class Pipeline:
             )
             return
 
+        # Apply market filter
+        alert_filter = self._settings.alert_filter
+        if alert_filter.enabled:
+            from polymarket_insider_tracker.ingestor.models import derive_category
+
+            market_title = bundle.trade_event.event_title or ""
+            category = derive_category(market_title)
+            if not alert_filter.should_alert(category, market_title):
+                logger.debug(
+                    "Alert filtered: category=%s, market=%s",
+                    category,
+                    market_title[:50],
+                )
+                return
+
         # Format and dispatch alert
         formatted_alert = self._alert_formatter.format(assessment)
 

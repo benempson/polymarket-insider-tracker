@@ -44,6 +44,9 @@ def mock_settings():
     telegram.bot_token = None
     telegram.chat_id = None
 
+    alert_filter = MagicMock()
+    alert_filter.enabled = False
+
     settings = MagicMock(spec=Settings)
     settings.redis = redis
     settings.database = database
@@ -51,6 +54,7 @@ def mock_settings():
     settings.polymarket = polymarket
     settings.discord = discord
     settings.telegram = telegram
+    settings.alert_filter = alert_filter
     settings.dry_run = True
     return settings
 
