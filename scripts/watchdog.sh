@@ -46,6 +46,7 @@ if [ "$STATUS" = "running" ]; then
     export TRACKER_IMAGE=$(docker inspect "$CONTAINER" --format='{{.Config.Image}}' 2>/dev/null)
     export REDIS_CONTAINER=$(docker inspect "$CONTAINER" --format='{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^REDIS_URL=' | sed 's|.*://\(.*\):.*|\1|')
     export REDIS_NETWORK=$(docker inspect "$REDIS_CONTAINER" --format='{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null | head -1)
+    export POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-shared-postgres}"
     export TRACKER_APP_DIR="$APP_DIR"
 
     cd "$APP_DIR"

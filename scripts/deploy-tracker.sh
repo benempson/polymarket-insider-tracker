@@ -35,7 +35,7 @@ else
     REDIS_NETWORK="bridge"
 fi
 
-# Source the POSTGRES_PASSWORD from the env file so compose can use it
+# Source the POSTGRES_PASSWORD from the env file so compose can interpolate DATABASE_URL
 if [ -f "$ENV_FILE" ]; then
     POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     export POSTGRES_PASSWORD
@@ -44,6 +44,7 @@ fi
 export TRACKER_IMAGE="$IMAGE"
 export REDIS_CONTAINER
 export REDIS_NETWORK
+export POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-shared-postgres}"
 export TRACKER_APP_DIR="$APP_DIR"
 
 log "Starting deploy: ${IMAGE}"

@@ -203,7 +203,7 @@ function Invoke-Diagnose {
         "docker ps --filter name=polymarket-tracker --format 'table {{.Names}}`t{{.Status}}`t{{.Image}}'"
 
     Collect "Restart Counts" `
-        "docker inspect polymarket-tracker polymarket-tracker-postgres --format '{{.Name}}  status={{.State.Status}}  restarts={{.RestartCount}}  exitCode={{.State.ExitCode}}' 2>/dev/null || echo 'One or both containers not found'"
+        "docker inspect polymarket-tracker shared-postgres --format '{{.Name}}  status={{.State.Status}}  restarts={{.RestartCount}}  exitCode={{.State.ExitCode}}' 2>/dev/null || echo 'One or both containers not found'"
 
     Collect "Health Endpoint (:8085/health)" `
         "curl -sf http://localhost:8085/health | python3 -m json.tool 2>/dev/null || echo 'UNREACHABLE'"
@@ -212,10 +212,31 @@ function Invoke-Diagnose {
         "curl -sf http://localhost:8085/metrics 2>/dev/null | grep -E '^polymarket_[^#]' || echo 'UNREACHABLE'"
 
     Collect "Database Tables & Row Counts" `
-        "docker exec polymarket-tracker-postgres psql -U tracker -d polymarket_tracker -c 'SELECT relname AS table, n_live_tup AS rows FROM pg_stat_user_tables ORDER BY n_live_tup DESC;' 2>/dev/null || echo 'Database unavailable'"
+        "docker exec shared-postgres psql -U tracker -d polymarket_tracker -c 'SELECT relname AS table, n_live_tup AS rows FROM pg_stat_user_tables ORDER BY n_live_tup DESC;' 2>/dev/null || echo 'Database unavailable'"
+
+    Collect "Redis Container Status" `
+        "docker inspect $RedisContainer --format 'Name={{.Name}}  Status={{.State.Status}}  Restarts={{.RestartCount}}  ExitCode={{.State.ExitCode}}  StartedAt={{.State.StartedAt}}  OOMKilled={{.State.OOMKilled}}' 2>/dev/null || echo 'Redis container not found'"
+
+    Collect "Redis Server Info" `
+        "docker exec $RedisContainer redis-cli INFO server 2>/dev/null | grep -E '^(redis_version|uptime_in_seconds|uptime_in_days|tcp_port|loading):' || echo 'Could not reach Redis'"
+
+    Collect "Redis Memory" `
+        "docker exec $RedisContainer redis-cli INFO memory 2>/dev/null | grep -E '^(used_memory_human|used_memory_peak_human|maxmemory_human|maxmemory_policy|mem_fragmentation_ratio|loading):' || echo 'Could not reach Redis'"
+
+    Collect "Redis Persistence (RDB/AOF)" `
+        "docker exec $RedisContainer redis-cli INFO persistence 2>/dev/null | grep -E '^(rdb_last_save_time|rdb_last_bgsave_status|rdb_last_bgsave_time_sec|aof_enabled|aof_last_rewrite_status|aof_current_size|aof_base_size|loading):' || echo 'Could not reach Redis'"
+
+    Collect "Redis Stats" `
+        "docker exec $RedisContainer redis-cli INFO stats 2>/dev/null | grep -E '^(total_connections_received|connected_clients|rejected_connections|evicted_keys|keyspace_hits|keyspace_misses):' || echo 'Could not reach Redis'"
+
+    Collect "Redis DBSIZE & Loading Status" `
+        "docker exec $RedisContainer redis-cli DBSIZE 2>&1; docker exec $RedisContainer redis-cli INFO server 2>/dev/null | grep -E '^loading:' || true"
 
     Collect "Active Redis Dedup Keys (polymarket:dedup:*)" `
-        "n=`$(docker exec `$(docker ps -qf name=nuera-backend-redis) redis-cli KEYS 'polymarket:dedup:*' 2>/dev/null | wc -l); echo `"`$n dedup keys active`""
+        "n=`$(docker exec $RedisContainer redis-cli KEYS 'polymarket:dedup:*' 2>/dev/null | wc -l); echo `"`$n dedup keys active`""
+
+    Collect "Redis Container Logs (last 50 lines)" `
+        "docker logs $RedisContainer --tail 50 2>&1"
 
     Collect "VM Resource Usage" `
         "free -h && echo '' && df -h / && echo '' && docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/dev/null"
@@ -314,6 +335,7 @@ function Invoke-UpdateConfig {
         "export TRACKER_IMAGE=`$(docker inspect polymarket-tracker --format='{{.Config.Image}}' 2>/dev/null)",
         "export REDIS_CONTAINER='$RedisContainer'",
         "export REDIS_NETWORK=`$(docker inspect '$RedisContainer' --format='{{range `$k,`$v := .NetworkSettings.Networks}}{{`$k}}{{end}}' 2>/dev/null | head -1)",
+        "export POSTGRES_CONTAINER='shared-postgres'",
         "export TRACKER_APP_DIR='$VmAppDir'",
         "docker compose -f docker-compose.prod.yml stop tracker",
         "docker compose -f docker-compose.prod.yml rm -f tracker",
