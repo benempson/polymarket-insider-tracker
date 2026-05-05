@@ -286,7 +286,7 @@ function Invoke-UpdateScripts {
 
     # Install watchdog cron job
     $cronJob = "*/5 * * * * TRACKER_APP_DIR=$VmAppDir $VmAppDir/scripts/watchdog.sh >> $VmAppDir/logs/cron/watchdog.log 2>&1"
-    $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'watchdog.sh'; echo '$cronJob') | crontab -"
+    $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v '$VmAppDir/scripts/watchdog.sh'; echo '$cronJob') | crontab -"
     if ($rc -ne 0) {
         Write-Host "  WARNING: Failed to install watchdog cron job." -ForegroundColor Yellow
     } else {
@@ -313,7 +313,7 @@ LOGROTATE_EOF
 
     # Install logrotate cron job
     $logrotateCron = "0 2 * * * /usr/sbin/logrotate --state $VmAppDir/logs/logrotate.state $VmAppDir/logs/logrotate.conf"
-    $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'logrotate.conf'; echo '$logrotateCron') | crontab -"
+    $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v '$VmAppDir/logs/logrotate.conf'; echo '$logrotateCron') | crontab -"
     if ($rc -ne 0) {
         Write-Host "  WARNING: Failed to install logrotate cron job." -ForegroundColor Yellow
     } else {
@@ -574,7 +574,7 @@ if ($rc -ne 0) { Fail "Failed to create cron log directory" }
 
 # Install cron job for watchdog (idempotent — removes old entry first)
 $cronJob = "*/5 * * * * TRACKER_APP_DIR=$VmAppDir $VmAppDir/scripts/watchdog.sh >> $VmAppDir/logs/cron/watchdog.log 2>&1"
-$rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'watchdog.sh'; echo '$cronJob') | crontab -"
+$rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v '$VmAppDir/scripts/watchdog.sh'; echo '$cronJob') | crontab -"
 if ($rc -ne 0) {
     Write-Host "  WARNING: Failed to install watchdog cron job. Install manually:" -ForegroundColor Yellow
     Write-Host "    crontab -e"
@@ -603,7 +603,7 @@ if ($rc -ne 0) { Fail "Failed to write logrotate config" }
 
 # Install logrotate cron job (idempotent — removes old entry first)
 $logrotateCron = "0 2 * * * /usr/sbin/logrotate --state $VmAppDir/logs/logrotate.state $VmAppDir/logs/logrotate.conf"
-$rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'logrotate.conf'; echo '$logrotateCron') | crontab -"
+$rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v '$VmAppDir/logs/logrotate.conf'; echo '$logrotateCron') | crontab -"
 if ($rc -ne 0) {
     Write-Host "  WARNING: Failed to install logrotate cron job." -ForegroundColor Yellow
 } else {
