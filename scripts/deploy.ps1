@@ -11,6 +11,7 @@
 # Usage (interactive):  .\scripts\deploy.ps1
 # Usage (scripted):     .\scripts\deploy.ps1 -Yes -AutomatedRun
 # Usage (re-deploy):    .\scripts\deploy.ps1 -Image 'ghcr.io/.../polymarket-insider-tracker:main-abc1234'
+# Usage (scripts only): .\scripts\deploy.ps1 -UpdateScripts
 # =============================================================================
 [CmdletBinding()]
 param(
@@ -41,6 +42,9 @@ param(
 
     # Push .env changes to the VM and restart the tracker
     [switch]$UpdateConfig,
+
+    # Sync scripts, cron jobs, and logrotate to the VM (no container restart)
+    [switch]$UpdateScripts,
 
     # Show recent container logs
     [switch]$Logs
@@ -102,10 +106,10 @@ $missingVars = @()
 if (-not $VmHost)         { $missingVars += 'DEPLOY_VM_HOST' }
 if (-not $VmPort)         { $missingVars += 'DEPLOY_VM_PORT' }
 if (-not $VmUser)         { $missingVars += 'DEPLOY_VM_USER' }
-if (-not $Diagnose) {
+if (-not $Diagnose -and -not $UpdateScripts) {
     if (-not $RedisContainer) { $missingVars += 'REDIS_CONTAINER_NAME' }
 }
-if (-not $Diagnose -and -not $UpdateConfig) {
+if (-not $Diagnose -and -not $UpdateConfig -and -not $UpdateScripts) {
     if (-not $GhcrUser)       { $missingVars += 'GHCR_USER' }
     if (-not $GhcrPat)        { $missingVars += 'GHCR_PAT' }
 }
@@ -119,7 +123,7 @@ if ($missingVars.Count -gt 0) {
     if (-not $Diagnose) {
         Write-Host "    REDIS_CONTAINER_NAME=<redis-container-name>"
     }
-    if (-not $Diagnose -and -not $UpdateConfig) {
+    if (-not $Diagnose -and -not $UpdateConfig -and -not $UpdateScripts) {
         Write-Host "    GHCR_USER=<github-username>"
         Write-Host "    GHCR_PAT=<ghcr-pat-with-packages-read>"
     }
@@ -254,6 +258,73 @@ function Invoke-Diagnose {
     Write-Host ""
 }
 
+function Invoke-UpdateScripts {
+    Write-Host "  Polymarket Insider Tracker - Update Scripts & Cron" -ForegroundColor Cyan
+    Write-Host "  ===================================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Ensure directories exist
+    Write-Host "  Creating directories..."
+    $rc = Invoke-Ssh "mkdir -p $VmAppDir/scripts $VmAppDir/logs/cron"
+    if ($rc -ne 0) { Fail "Failed to create directories on VM" }
+
+    # Sync scripts
+    Write-Host "  Syncing scripts..."
+    $rc = Copy-ToVm "scripts/deploy-tracker.sh" "$VmAppDir/scripts/deploy-tracker.sh"
+    if ($rc -ne 0) { Fail "Failed to sync deploy-tracker.sh" }
+    $rc = Invoke-Ssh "sed -i 's/\r//' $VmAppDir/scripts/deploy-tracker.sh && chmod +x $VmAppDir/scripts/deploy-tracker.sh"
+    if ($rc -ne 0) { Fail "Failed to fix deploy-tracker.sh" }
+
+    $rc = Copy-ToVm "scripts/watchdog.sh" "$VmAppDir/scripts/watchdog.sh"
+    if ($rc -ne 0) { Fail "Failed to sync watchdog.sh" }
+    $rc = Invoke-Ssh "sed -i 's/\r//' $VmAppDir/scripts/watchdog.sh && chmod +x $VmAppDir/scripts/watchdog.sh"
+    if ($rc -ne 0) { Fail "Failed to fix watchdog.sh" }
+
+    # Sync docker-compose
+    $rc = Copy-ToVm "docker-compose.prod.yml" "$VmAppDir/docker-compose.prod.yml"
+    if ($rc -ne 0) { Fail "Failed to sync docker-compose.prod.yml" }
+
+    # Install watchdog cron job
+    $cronJob = "*/5 * * * * TRACKER_APP_DIR=$VmAppDir $VmAppDir/scripts/watchdog.sh >> $VmAppDir/logs/cron/watchdog.log 2>&1"
+    $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'watchdog.sh'; echo '$cronJob') | crontab -"
+    if ($rc -ne 0) {
+        Write-Host "  WARNING: Failed to install watchdog cron job." -ForegroundColor Yellow
+    } else {
+        Write-Host ("  " + $CHK + " Watchdog cron installed (every 5 min)")
+    }
+
+    # Deploy logrotate configuration
+    $logrotateCmd = @"
+cat > $VmAppDir/logs/logrotate.conf << 'LOGROTATE_EOF'
+$VmAppDir/logs/*.log
+$VmAppDir/logs/**/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}
+LOGROTATE_EOF
+"@
+    $rc = Invoke-Ssh $logrotateCmd
+    if ($rc -ne 0) { Fail "Failed to write logrotate config" }
+
+    # Install logrotate cron job
+    $logrotateCron = "0 2 * * * /usr/sbin/logrotate --state $VmAppDir/logs/logrotate.state $VmAppDir/logs/logrotate.conf"
+    $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'logrotate.conf'; echo '$logrotateCron') | crontab -"
+    if ($rc -ne 0) {
+        Write-Host "  WARNING: Failed to install logrotate cron job." -ForegroundColor Yellow
+    } else {
+        Write-Host ("  " + $CHK + " Logrotate cron installed (daily at 2am)")
+    }
+
+    Write-Host ""
+    Write-Host ("  " + $CHK + " Scripts and cron jobs updated.") -ForegroundColor Green
+    Write-Host ""
+}
+
 function Invoke-UpdateConfig {
     Write-Host "  Polymarket Insider Tracker - Update Config" -ForegroundColor Cyan
     Write-Host "  ===========================================" -ForegroundColor Cyan
@@ -364,6 +435,7 @@ Write-Host ""
 
 if ($Diagnose) { Invoke-Diagnose; exit 0 }
 if ($UpdateConfig) { Invoke-UpdateConfig; exit 0 }
+if ($UpdateScripts) { Invoke-UpdateScripts; exit 0 }
 if ($Logs) { Invoke-Ssh "curl -sf 'http://localhost:8085/logs?lines=100' 2>/dev/null || docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
 
 Write-Host "  Polymarket Insider Tracker - Deploy" -ForegroundColor Cyan
@@ -382,17 +454,19 @@ if ($Image) {
         Write-Host "  1) Build and deploy  (push, build image, then deploy to VM)"
         Write-Host "  2) Deploy only       (use latest image, skip build)"
         Write-Host "  3) Update config     (push .env changes, restart tracker)"
-        Write-Host "  4) Show recent logs  (last 100 lines)"
-        Write-Host "  5) Collect diagnostics from the running bot"
+        Write-Host "  4) Update scripts    (sync scripts & cron jobs, no restart)"
+        Write-Host "  5) Show recent logs  (last 100 lines)"
+        Write-Host "  6) Collect diagnostics from the running bot"
         Write-Host ""
-        $choice = Read-Host "  Choose (1/2/3/4/5)"
-        if ($choice -notin @('1','2','3','4','5')) { Fail "Invalid choice '$choice'. Please enter 1, 2, 3, 4, or 5." }
+        $choice = Read-Host "  Choose (1/2/3/4/5/6)"
+        if ($choice -notin @('1','2','3','4','5','6')) { Fail "Invalid choice '$choice'. Please enter 1-6." }
     } else {
         $choice = '1'
     }
 
-    if ($choice -eq '5') { Invoke-Diagnose; exit 0 }
-    if ($choice -eq '4') { Invoke-Ssh "curl -sf 'http://localhost:8085/logs?lines=100' 2>/dev/null || docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
+    if ($choice -eq '6') { Invoke-Diagnose; exit 0 }
+    if ($choice -eq '5') { Invoke-Ssh "curl -sf 'http://localhost:8085/logs?lines=100' 2>/dev/null || docker logs polymarket-tracker --tail 100 2>&1"; exit 0 }
+    if ($choice -eq '4') { Invoke-UpdateScripts; exit 0 }
     if ($choice -eq '3') { Invoke-UpdateConfig; exit 0 }
 
     if ($choice -eq '2') {
