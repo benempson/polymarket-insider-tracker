@@ -494,8 +494,12 @@ if ($rc -ne 0) { Fail "Failed to fix line endings in watchdog.sh" }
 $rc = Invoke-Ssh "chmod +x $VmAppDir/scripts/watchdog.sh"
 if ($rc -ne 0) { Fail "Failed to make watchdog.sh executable" }
 
+# Ensure cron log directory exists
+$rc = Invoke-Ssh "mkdir -p $VmAppDir/logs/cron"
+if ($rc -ne 0) { Fail "Failed to create cron log directory" }
+
 # Install cron job for watchdog (idempotent — removes old entry first)
-$cronJob = "*/5 * * * * TRACKER_APP_DIR=$VmAppDir $VmAppDir/scripts/watchdog.sh >> /var/log/tracker-watchdog.log 2>&1"
+$cronJob = "*/5 * * * * TRACKER_APP_DIR=$VmAppDir $VmAppDir/scripts/watchdog.sh >> $VmAppDir/logs/cron/watchdog.log 2>&1"
 $rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'watchdog.sh'; echo '$cronJob') | crontab -"
 if ($rc -ne 0) {
     Write-Host "  WARNING: Failed to install watchdog cron job. Install manually:" -ForegroundColor Yellow
@@ -503,6 +507,33 @@ if ($rc -ne 0) {
     Write-Host "    $cronJob"
 } else {
     Write-Host ("  " + $CHK + " Watchdog cron installed (every 5 min)")
+}
+
+# Deploy logrotate configuration for project logs
+$logrotateCmd = @"
+cat > $VmAppDir/logs/logrotate.conf << 'LOGROTATE_EOF'
+$VmAppDir/logs/*.log
+$VmAppDir/logs/**/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}
+LOGROTATE_EOF
+"@
+$rc = Invoke-Ssh $logrotateCmd
+if ($rc -ne 0) { Fail "Failed to write logrotate config" }
+
+# Install logrotate cron job (idempotent — removes old entry first)
+$logrotateCron = "0 2 * * * /usr/sbin/logrotate --state $VmAppDir/logs/logrotate.state $VmAppDir/logs/logrotate.conf"
+$rc = Invoke-Ssh "(crontab -l 2>/dev/null | grep -v 'logrotate.conf'; echo '$logrotateCron') | crontab -"
+if ($rc -ne 0) {
+    Write-Host "  WARNING: Failed to install logrotate cron job." -ForegroundColor Yellow
+} else {
+    Write-Host ("  " + $CHK + " Logrotate cron installed (daily at 2am)")
 }
 
 # ---------------------------------------------------------------------------
